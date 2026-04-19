@@ -23,7 +23,33 @@ from typing import Optional
 
 import numpy as np
 from rapidfuzz import fuzz, process
-from sentence_transformers import SentenceTransformer
+
+# ── RENDER FREE TIER GUARD ────────────────────────────────────────────────────
+# sentence-transformers requires ~400MB RAM and is removed from requirements-render.txt
+# We guard the import so the app starts successfully without it.
+# When not available, the classifier falls back to rule-based + fuzzy matching only.
+
+try:
+    from sentence_transformers import SentenceTransformer
+    EMBEDDINGS_AVAILABLE = True
+except ImportError:
+    SentenceTransformer = None      # type: ignore[assignment,misc]
+    EMBEDDINGS_AVAILABLE = False
+
+# ── RENDER FREE TIER GUARD ────────────────────────────────────────────────────
+# pytesseract and pdf2image need system-level binaries (tesseract, poppler)
+# which cannot be installed on Render's free tier (read-only filesystem).
+# BankOCR gracefully reports unavailability instead of crashing.
+
+try:
+    import pytesseract
+    from PIL import Image as _PILImage
+    OCR_AVAILABLE = True
+except ImportError:
+    pytesseract = None              # type: ignore[assignment]
+    _PILImage   = None              # type: ignore[assignment]
+    OCR_AVAILABLE = False
+
 
 # ── Data Classes ──────────────────────────────────────────────────────────────
 
@@ -63,7 +89,7 @@ class TransactionClassifier:
     Strategy (in priority order):
       1. Exact match from company's learned mappings
       2. Rule-based patterns (known vendors, GST payments, salary, etc.)
-      3. Semantic embedding similarity
+      3. Semantic embedding similarity  ← only if sentence-transformers available
       4. Fallback to "Miscellaneous Expenses"
     """
 
@@ -113,13 +139,24 @@ class TransactionClassifier:
 
     def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
         """
-        Load sentence transformer model.
-        'all-MiniLM-L6-v2' is fast (80MB) and accurate enough for narrations.
+        Load sentence transformer model if available.
+        On Render free tier, sentence-transformers is not installed,
+        so we skip model loading and use rule-based + fuzzy matching only.
         """
-        self.model = SentenceTransformer(model_name)
         self._account_embeddings: dict[str, np.ndarray] = {}
         self._account_index: list[dict] = []          # [{id, code, name, nature}]
         self._learned_map: dict[str, str] = {}        # narration_hash → account_id
+
+        # ── RENDER FREE TIER: only load model if library is available ─────────
+        if EMBEDDINGS_AVAILABLE and SentenceTransformer is not None:
+            try:
+                self.model = SentenceTransformer(model_name)
+            except Exception:
+                # Model download failed (no internet, OOM, etc.) — degrade gracefully
+                self.model = None
+        else:
+            self.model = None
+        # ─────────────────────────────────────────────────────────────────────
 
     def load_accounts(self, accounts: list[dict]) -> None:
         """
@@ -129,11 +166,14 @@ class TransactionClassifier:
         accounts: [{"id": "...", "code": "8001", "name": "Salaries & Wages", ...}]
         """
         self._account_index = accounts
-        names = [a["name"] for a in accounts]
-        embeddings = self.model.encode(names, convert_to_numpy=True,
-                                       show_progress_bar=False)
-        for i, acc in enumerate(accounts):
-            self._account_embeddings[acc["id"]] = embeddings[i]
+
+        # Only compute embeddings if the model loaded successfully
+        if self.model is not None:
+            names = [a["name"] for a in accounts]
+            embeddings = self.model.encode(names, convert_to_numpy=True,
+                                           show_progress_bar=False)
+            for i, acc in enumerate(accounts):
+                self._account_embeddings[acc["id"]] = embeddings[i]
 
     def load_learned_mappings(self, mappings: list[dict]) -> None:
         """
@@ -170,8 +210,8 @@ class TransactionClassifier:
         if rule_result:
             return rule_result
 
-        # 3. Embedding similarity
-        if self._account_embeddings:
+        # 3. Embedding similarity (only if model is loaded)
+        if self.model is not None and self._account_embeddings:
             emb_result = self._classify_by_embedding(narration_clean)
             if emb_result:
                 return emb_result
@@ -478,17 +518,21 @@ class BankOCR:
     """
     Extract text from scanned bank statement PDFs using Tesseract.
     Use when pdfplumber returns no tables (image-based PDFs).
+
+    NOTE: On Render free tier, OCR is unavailable because tesseract and
+    poppler-utils cannot be installed (read-only filesystem).
+    The class initialises safely and raises a clear 503 error if called.
     """
 
     def __init__(self):
-        try:
-            import pytesseract
-            from PIL import Image
+        # ── RENDER FREE TIER GUARD ────────────────────────────────────────────
+        # pytesseract and pdf2image need system binaries not available on Render.
+        # We set self.available = False instead of crashing at import time.
+        self.available = OCR_AVAILABLE
+        if self.available:
             self.pytesseract = pytesseract
-            self.Image = Image
-            self.available = True
-        except ImportError:
-            self.available = False
+            self.Image = _PILImage
+        # ─────────────────────────────────────────────────────────────────────
 
     def pdf_to_text(self, pdf_bytes: bytes, lang: str = "eng") -> str:
         """
@@ -497,7 +541,8 @@ class BankOCR:
         """
         if not self.available:
             raise RuntimeError(
-                "OCR dependencies not installed. Run: pip install pytesseract pillow pdf2image"
+                "OCR is not available in this deployment (Render free tier). "
+                "Please upload a CSV or Excel bank statement instead."
             )
 
         from pdf2image import convert_from_bytes
@@ -520,7 +565,6 @@ class BankOCR:
         Parse OCR text into structured transaction rows.
         Uses regex patterns common in Indian bank statements.
         """
-        # Pattern: date | narration | dr amount | cr amount | balance
         pattern = re.compile(
             r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})"   # date
             r"\s+(.+?)\s+"                          # narration
@@ -550,25 +594,3 @@ class BankOCR:
             })
 
         return rows
-
-
-# ── Usage Example ─────────────────────────────────────────────────────────────
-#
-# from ai.classifier import TransactionClassifier, ReconciliationEngine, AnomalyDetector
-#
-# # 1. Classify
-# clf = TransactionClassifier()
-# clf.load_accounts(accounts_from_db)
-# clf.load_learned_mappings(company_learned_mappings)
-# result = clf.classify("AMAZON PAY INDIA PVT LTD")
-# # → ClassificationResult(account_id='...', account_name='Software Subscriptions',
-# #                        confidence=0.88, method='rule', requires_review=False)
-#
-# # 2. Reconcile
-# engine = ReconciliationEngine()
-# match = engine.match(bank_txn, open_vouchers)
-# # → ReconciliationMatch(confidence=0.97, match_type='exact', delta_days=0)
-#
-# # 3. Detect anomalies
-# detector = AnomalyDetector()
-# anomalies = detector.run_all(all_transactions, matched_ids)
