@@ -1,0 +1,42 @@
+# ── Web Framework ──────────────────────────────────────────
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+python-multipart==0.0.9
+
+# ── Database ───────────────────────────────────────────────
+asyncpg==0.29.0
+sqlalchemy[asyncio]==2.0.30
+alembic==1.13.1
+psycopg2-binary==2.9.9
+
+# ── Auth ───────────────────────────────────────────────────
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# ── AI / ML ────────────────────────────────────────────────
+numpy==1.26.4
+scikit-learn==1.5.0
+rapidfuzz==3.9.3
+anthropic==0.28.0
+
+# ── Document Parsing ───────────────────────────────────────
+pdfplumber==0.11.1
+openpyxl==3.1.2
+pandas==2.2.2
+xlrd==2.0.1
+
+# ── Validation ─────────────────────────────────────────────
+pydantic==2.7.1
+pydantic-settings==2.3.0
+
+# ── Monitoring ─────────────────────────────────────────────
+structlog==24.2.0
+
+# ── Report generation (lightweight alternative) ────────────
+jinja2==3.1.4
+
+# REMOVED FOR RENDER FREE TIER:
+# pytesseract, pdf2image → need tesseract + poppler (system packages)
+# weasyprint            → needs libpango, libcairo (system packages)
+# sentence-transformers → too heavy (~400MB), OOM on free tier
+# celery, redis, redbeat → needs separate worker + Redis instance
