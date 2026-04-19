@@ -1,223 +1,358 @@
 // src/pages/Dashboard.jsx
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import {
-  AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Legend
+  AreaChart, Area, BarChart, Bar, XAxis, YAxis,
+  CartesianGrid, Tooltip, ResponsiveContainer, Legend
 } from 'recharts'
-import { TrendingUp, TrendingDown, AlertTriangle, Info, CheckCircle, ArrowRight } from 'lucide-react'
+import {
+  TrendingUp, TrendingDown, DollarSign, Activity,
+  AlertTriangle, Info, CheckCircle, ArrowRight, X,
+  Zap, BarChart2, CreditCard, Wallet
+} from 'lucide-react'
 import { mockDashboard } from '../api/mockData'
-import { fmt, fmtCr } from '../utils/format'
+import { fmt, fmtCr, fmtDate } from '../utils/format'
 
-const COLORS = { inflow: '#2563eb', outflow: '#e5e7eb' }
+const voucherBadge = {
+  sales:    'badge-green',
+  purchase: 'badge-red',
+  receipt:  'badge-blue',
+  payment:  'badge-amber',
+  journal:  'badge-gray',
+}
 
-const voucherTypeColor = {
-  sales: 'badge-green', purchase: 'badge-red',
-  receipt: 'badge-blue', payment: 'badge-amber',
-  journal: 'badge-gray',
+const CustomTooltip = ({ active, payload, label }) => {
+  if (!active || !payload?.length) return null
+  return (
+    <div style={{
+      background: 'var(--text)', color: 'white',
+      borderRadius: 10, padding: '10px 14px',
+      fontSize: '0.8rem', boxShadow: '0 8px 20px rgba(0,0,0,0.2)'
+    }}>
+      <div style={{ fontWeight: 700, marginBottom: 6, color: '#94A3B8' }}>{label}</div>
+      {payload.map(p => (
+        <div key={p.name} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+          <div style={{ width: 8, height: 8, borderRadius: '50%', background: p.color }} />
+          <span style={{ color: '#CBD5E1', textTransform: 'capitalize' }}>{p.name}:</span>
+          <span style={{ fontWeight: 600 }}>₹{(p.value / 100000).toFixed(1)}L</span>
+        </div>
+      ))}
+    </div>
+  )
 }
 
 export default function Dashboard() {
-  const [data, setData] = useState(mockDashboard)
-
+  const [data]   = useState(mockDashboard)
+  const [alerts, setAlerts] = useState(data.alerts)
+  const [showModal, setShowModal] = useState(false)
   const bs = data.balanceSheet
+
+  const kpis = [
+    {
+      label: 'Total Revenue', value: fmtCr(bs.income),
+      icon: DollarSign, color: 'blue',
+      trend: '+18% vs last year', dir: 'up'
+    },
+    {
+      label: 'Net Profit', value: fmtCr(bs.net_profit),
+      icon: TrendingUp, color: 'green',
+      trend: `Margin ${((bs.net_profit / bs.income) * 100).toFixed(1)}%`, dir: 'up'
+    },
+    {
+      label: 'Total Assets', value: fmtCr(bs.assets),
+      icon: Wallet, color: 'purple',
+      trend: 'Including receivables', dir: 'up'
+    },
+    {
+      label: 'Net Payables', value: fmtCr(bs.liabilities),
+      icon: CreditCard, color: 'red',
+      trend: 'Creditors + tax', dir: 'down'
+    },
+  ]
 
   return (
     <div className="page-enter">
       {/* Header */}
       <div className="page-header">
-        <div className="page-header-left">
-          <h1>Good morning, Acme Corp</h1>
-          <p>Financial snapshot for FY 2024-25 · March 2024</p>
+        <div>
+          <h1 className="page-title">Good morning, Acme Corp 👋</h1>
+          <p className="page-subtitle">Financial snapshot for FY 2024-25 · March 2024</p>
         </div>
-        <div className="flex gap-2">
-          <button className="btn btn-outline">Export PDF</button>
-          <button className="btn btn-primary">+ New Entry</button>
+        <div className="page-actions">
+          <button className="btn btn-secondary">
+            <Activity size={15} /> Export PDF
+          </button>
+          <button className="btn btn-primary" onClick={() => setShowModal(true)}>
+            + New Entry
+          </button>
         </div>
       </div>
 
-      <div className="page-body">
-        {/* Alerts */}
-        {data.alerts.map((alert, i) => (
-          <div key={i} style={{
-            display: 'flex', alignItems: 'center', gap: 10,
-            padding: '10px 16px', borderRadius: 8, marginBottom: 8,
-            background: alert.type === 'warning' ? '#fef3c7'
-              : alert.type === 'success' ? '#dcfce7' : '#dbeafe',
-            fontSize: '0.85rem',
-            color: alert.type === 'warning' ? '#92400e'
-              : alert.type === 'success' ? '#15803d' : '#1e40af',
-          }}>
-            {alert.type === 'warning' && <AlertTriangle size={14} />}
-            {alert.type === 'info'    && <Info size={14} />}
-            {alert.type === 'success' && <CheckCircle size={14} />}
-            <span style={{ flex: 1 }}>{alert.message}</span>
-            {alert.action && (
-              <button style={{ fontWeight: 500, background: 'none', border: 'none',
-                cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4,
-                color: 'inherit', fontSize: 'inherit' }}>
-                {alert.action} <ArrowRight size={12} />
+      {/* Alerts */}
+      {alerts.length > 0 && (
+        <div className="alerts-stack">
+          {alerts.map((alert, i) => (
+            <div key={i} className={`alert-banner ${alert.type}`}>
+              {alert.type === 'warning' && <AlertTriangle size={15} />}
+              {alert.type === 'info'    && <Info size={15} />}
+              {alert.type === 'success' && <CheckCircle size={15} />}
+              <span className="alert-msg">{alert.message}</span>
+              {alert.action && (
+                <button className="alert-action">
+                  {alert.action} <ArrowRight size={12} />
+                </button>
+              )}
+              <button className="alert-dismiss" onClick={() => setAlerts(a => a.filter((_, j) => j !== i))}>
+                <X size={14} />
               </button>
-            )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* KPI Cards */}
+      <div className="kpi-grid">
+        {kpis.map(kpi => (
+          <div key={kpi.label} className={`kpi-card ${kpi.color}`}>
+            <div className={`kpi-icon ${kpi.color}`}>
+              <kpi.icon size={18} />
+            </div>
+            <div className="kpi-label">{kpi.label}</div>
+            <div className="kpi-value">{kpi.value}</div>
+            <span className={`kpi-trend ${kpi.dir}`}>
+              {kpi.dir === 'up' ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
+              {kpi.trend}
+            </span>
           </div>
         ))}
+      </div>
 
-        {/* Metric cards */}
-        <div className="metric-grid" style={{ marginTop: 20 }}>
-          <MetricCard label="Total Revenue" value={fmtCr(bs.income)}
-            sub="+18% vs last year" trend="up" accent="#2563eb" />
-          <MetricCard label="Net Profit" value={fmtCr(bs.net_profit)}
-            sub={`Margin ${((bs.net_profit/bs.income)*100).toFixed(1)}%`} trend="up" accent="#16a34a" />
-          <MetricCard label="Total Assets" value={fmtCr(bs.assets)}
-            sub="Including receivables" trend="up" accent="#7c3aed" />
-          <MetricCard label="Net Payables" value={fmtCr(bs.liabilities)}
-            sub="Creditors + tax liabilities" trend="down" accent="#dc2626" />
-        </div>
-
-        {/* Charts row */}
-        <div className="grid-2" style={{ gap: 20, marginBottom: 20 }}>
-          {/* Cash flow chart */}
-          <div className="card">
-            <div className="card-header">
-              <h3>Cash Flow — Last 6 Months</h3>
-              <span className="badge badge-blue">Monthly</span>
-            </div>
-            <div className="card-body" style={{ paddingTop: 12 }}>
-              <ResponsiveContainer width="100%" height={220}>
-                <AreaChart data={data.cashflow} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="inflow" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#2563eb" stopOpacity={0.15}/>
-                      <stop offset="95%" stopColor="#2563eb" stopOpacity={0}/>
-                    </linearGradient>
-                    <linearGradient id="outflow" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#dc2626" stopOpacity={0.1}/>
-                      <stop offset="95%" stopColor="#dc2626" stopOpacity={0}/>
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f0ede6" />
-                  <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#9b9590' }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 11, fill: '#9b9590' }} axisLine={false} tickLine={false}
-                    tickFormatter={v => `₹${(v/100000).toFixed(0)}L`} />
-                  <Tooltip formatter={(v) => [`₹${fmt(v)}`, '']}
-                    contentStyle={{ border: '1px solid #e5e1d8', borderRadius: 8, fontSize: 12 }} />
-                  <Area type="monotone" dataKey="inflow" name="Inflow"
-                    stroke="#2563eb" strokeWidth={2} fill="url(#inflow)" />
-                  <Area type="monotone" dataKey="outflow" name="Outflow"
-                    stroke="#dc2626" strokeWidth={2} fill="url(#outflow)" />
-                  <Legend wrapperStyle={{ fontSize: 11 }} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
+      {/* Charts Row */}
+      <div className="grid-2" style={{ marginBottom: 24 }}>
+        {/* Cash Flow */}
+        <div className="card">
+          <div className="card-header">
+            <span className="card-title">Cash Flow — Last 6 Months</span>
+            <span className="badge badge-blue">Monthly</span>
           </div>
-
-          {/* P&L bar chart */}
-          <div className="card">
-            <div className="card-header">
-              <h3>Income vs Expenses</h3>
-              <span className="badge badge-green">FY 2024-25</span>
-            </div>
-            <div className="card-body" style={{ paddingTop: 12 }}>
-              <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={data.cashflow} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f0ede6" vertical={false} />
-                  <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#9b9590' }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 11, fill: '#9b9590' }} axisLine={false} tickLine={false}
-                    tickFormatter={v => `₹${(v/100000).toFixed(0)}L`} />
-                  <Tooltip formatter={(v) => [`₹${fmt(v)}`, '']}
-                    contentStyle={{ border: '1px solid #e5e1d8', borderRadius: 8, fontSize: 12 }} />
-                  <Bar dataKey="inflow" name="Income" fill="#2563eb" radius={[4,4,0,0]} />
-                  <Bar dataKey="outflow" name="Expenses" fill="#e5e1d8" radius={[4,4,0,0]} />
-                  <Legend wrapperStyle={{ fontSize: 11 }} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+          <div className="card-body" style={{ paddingTop: 8 }}>
+            <ResponsiveContainer width="100%" height={220}>
+              <AreaChart data={data.cashflow} margin={{ top: 8, right: 8, left: -10, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="gInflow" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#4F46E5" stopOpacity={0.18} />
+                    <stop offset="95%" stopColor="#4F46E5" stopOpacity={0} />
+                  </linearGradient>
+                  <linearGradient id="gOutflow" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#DC2626" stopOpacity={0.12} />
+                    <stop offset="95%" stopColor="#DC2626" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                <XAxis dataKey="month" tick={{ fontSize: 11, fill: 'var(--text-3)', fontFamily: 'Figtree' }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 11, fill: 'var(--text-3)', fontFamily: 'Figtree' }} axisLine={false} tickLine={false} tickFormatter={v => `₹${(v / 100000).toFixed(0)}L`} />
+                <Tooltip content={<CustomTooltip />} />
+                <Legend wrapperStyle={{ fontSize: '0.78rem', paddingTop: 12, fontFamily: 'Figtree' }} />
+                <Area type="monotone" dataKey="inflow"  stroke="#4F46E5" strokeWidth={2.5} fill="url(#gInflow)"  name="inflow" />
+                <Area type="monotone" dataKey="outflow" stroke="#DC2626" strokeWidth={2}   fill="url(#gOutflow)" name="outflow" />
+              </AreaChart>
+            </ResponsiveContainer>
           </div>
         </div>
 
-        {/* Balance Sheet summary + Recent transactions */}
-        <div className="grid-2" style={{ gap: 20 }}>
-          {/* Mini balance sheet */}
+        {/* Monthly Comparison Bar */}
+        <div className="card">
+          <div className="card-header">
+            <span className="card-title">Revenue vs Expenses</span>
+            <span className="badge badge-green">FY 2024-25</span>
+          </div>
+          <div className="card-body" style={{ paddingTop: 8 }}>
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={data.cashflow} margin={{ top: 8, right: 8, left: -10, bottom: 0 }} barSize={12}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                <XAxis dataKey="month" tick={{ fontSize: 11, fill: 'var(--text-3)', fontFamily: 'Figtree' }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 11, fill: 'var(--text-3)', fontFamily: 'Figtree' }} axisLine={false} tickLine={false} tickFormatter={v => `₹${(v / 100000).toFixed(0)}L`} />
+                <Tooltip content={<CustomTooltip />} />
+                <Legend wrapperStyle={{ fontSize: '0.78rem', paddingTop: 12, fontFamily: 'Figtree' }} />
+                <Bar dataKey="inflow"  fill="#4F46E5" radius={[4, 4, 0, 0]} name="revenue" />
+                <Bar dataKey="outflow" fill="#E2E8F0" radius={[4, 4, 0, 0]} name="expenses" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </div>
+
+      {/* Bottom Row: AI Insights + Recent Transactions */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 20, marginBottom: 24 }}>
+        {/* AI Insights Panel */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {/* AI Card */}
+          <div className="ai-card">
+            <div className="ai-icon">
+              <Zap size={18} color="var(--primary)" />
+            </div>
+            <div>
+              <div className="ai-label">AI Insight</div>
+              <div className="ai-text">94 transactions auto-classified today with 98% accuracy</div>
+              <div className="ai-meta">Rule-based + fuzzy matching engine</div>
+            </div>
+          </div>
+
+          {/* Balance Summary */}
           <div className="card">
-            <div className="card-header"><h3>Balance Sheet Summary</h3></div>
-            <div className="card-body" style={{ padding: '16px 24px' }}>
+            <div className="card-header">
+              <span className="card-title">Balance Sheet</span>
+            </div>
+            <div className="card-body" style={{ paddingTop: 14 }}>
               {[
-                { label: 'Total Assets', value: bs.assets, color: '#2563eb' },
-                { label: 'Total Liabilities', value: bs.liabilities, color: '#dc2626' },
-                { label: 'Owner\'s Equity', value: bs.equity, color: '#16a34a' },
+                { label: 'Assets', value: bs.assets, color: 'var(--primary)' },
+                { label: 'Liabilities', value: bs.liabilities, color: 'var(--danger)' },
+                { label: 'Equity', value: bs.equity, color: 'var(--success)' },
               ].map(row => (
-                <div key={row.label} style={{
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                  padding: '12px 0', borderBottom: '1px solid #f0ede6'
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <div style={{ width: 3, height: 18, borderRadius: 2, background: row.color }} />
-                    <span style={{ fontSize: '0.875rem', color: '#5a5750' }}>{row.label}</span>
+                <div key={row.label} style={{ marginBottom: 14 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-2)', fontWeight: 500 }}>{row.label}</span>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.82rem', fontWeight: 600, color: 'var(--text)' }}>
+                      {fmtCr(row.value)}
+                    </span>
                   </div>
-                  <span style={{ fontFamily: 'DM Serif Display, serif', fontSize: '1.1rem' }}>
-                    {fmtCr(row.value)}
-                  </span>
+                  <div className="progress-wrap">
+                    <div className="progress-fill" style={{
+                      width: `${(row.value / bs.assets) * 100}%`,
+                      background: row.color
+                    }} />
+                  </div>
                 </div>
               ))}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 12 }}>
-                <span style={{ fontWeight: 500, fontSize: '0.875rem' }}>Net Profit (YTD)</span>
-                <span style={{ fontFamily: 'DM Serif Display, serif', fontSize: '1.1rem', color: '#16a34a' }}>
-                  {fmtCr(bs.net_profit)}
-                </span>
+            </div>
+          </div>
+
+          {/* Reconciliation status */}
+          <div className="card">
+            <div className="card-header">
+              <span className="card-title">Reconciliation</span>
+              <span className="badge badge-amber">12 pending</span>
+            </div>
+            <div className="card-body" style={{ paddingTop: 14 }}>
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-2)' }}>Auto-matched</span>
+                  <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--success)' }}>71%</span>
+                </div>
+                <div className="progress-wrap">
+                  <div className="progress-fill" style={{ width: '71%', background: 'var(--success)' }} />
+                </div>
+              </div>
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-2)' }}>Needs review</span>
+                  <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--warning)' }}>29%</span>
+                </div>
+                <div className="progress-wrap">
+                  <div className="progress-fill" style={{ width: '29%', background: 'var(--warning)' }} />
+                </div>
               </div>
             </div>
           </div>
+        </div>
 
-          {/* Recent vouchers */}
-          <div className="card">
-            <div className="card-header">
-              <h3>Recent Transactions</h3>
-              <a href="/journal" style={{ fontSize: '0.8rem', color: '#2563eb', textDecoration: 'none' }}>
-                View all →
-              </a>
-            </div>
-            <div style={{ padding: '8px 0' }}>
-              {data.recentVouchers.map(v => (
-                <div key={v.id} style={{
-                  display: 'flex', alignItems: 'center', gap: 12,
-                  padding: '10px 24px', borderBottom: '1px solid #f7f5f0'
-                }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: '0.857rem', fontWeight: 500, marginBottom: 2,
-                      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {v.narration}
-                    </div>
-                    <div style={{ fontSize: '0.75rem', color: '#9b9590' }}>
-                      {v.voucher_no} · {v.date}
-                    </div>
-                  </div>
-                  <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                    <div style={{ fontWeight: 500, fontSize: '0.875rem',
-                      color: ['receipt','sales'].includes(v.voucher_type) ? '#16a34a' : '#dc2626' }}>
-                      {['receipt','sales'].includes(v.voucher_type) ? '+' : '−'}₹{fmt(v.amount)}
-                    </div>
-                    <span className={`badge ${voucherTypeColor[v.voucher_type]}`} style={{ marginTop: 3 }}>
-                      {v.voucher_type}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
+        {/* Recent Transactions */}
+        <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
+          <div className="card-header" style={{ paddingBottom: 14 }}>
+            <span className="card-title">Recent Transactions</span>
+            <button className="btn btn-ghost btn-sm">
+              View all <ArrowRight size={13} />
+            </button>
+          </div>
+          <div style={{ borderTop: '1px solid var(--border)' }}>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>Voucher No.</th>
+                  <th>Narration</th>
+                  <th>Type</th>
+                  <th>Date</th>
+                  <th style={{ textAlign: 'right' }}>Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.recentVouchers.map(v => (
+                  <tr key={v.id}>
+                    <td>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', color: 'var(--primary)', fontWeight: 600 }}>
+                        {v.voucher_no}
+                      </span>
+                    </td>
+                    <td style={{ maxWidth: 240 }}>
+                      <span style={{ fontSize: '0.85rem', color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block' }}>
+                        {v.narration}
+                      </span>
+                    </td>
+                    <td>
+                      <span className={`badge ${voucherBadge[v.voucher_type] || 'badge-gray'}`} style={{ textTransform: 'capitalize' }}>
+                        {v.voucher_type}
+                      </span>
+                    </td>
+                    <td style={{ color: 'var(--text-3)', fontSize: '0.8rem' }}>
+                      {fmtDate(v.date)}
+                    </td>
+                    <td style={{ textAlign: 'right' }}>
+                      <span className={v.voucher_type === 'sales' || v.voucher_type === 'receipt' ? 'amt-cr' : 'amt-dr'}>
+                        ₹{fmt(v.amount)}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
-    </div>
-  )
-}
 
-function MetricCard({ label, value, sub, trend, accent }) {
-  return (
-    <div className="metric-card">
-      <div className="metric-label">{label}</div>
-      <div className="metric-value">{value}</div>
-      <div className={`metric-sub ${trend}`}>
-        {trend === 'up' ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
-        {sub}
-      </div>
+      {/* New Entry Modal */}
+      {showModal && (
+        <div className="modal-overlay" onClick={() => setShowModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <span className="modal-title">New Journal Entry</span>
+              <button className="icon-btn" onClick={() => setShowModal(false)}><X size={18} /></button>
+            </div>
+            <div className="modal-body">
+              <div className="form-group">
+                <label className="form-label">Voucher Type</label>
+                <select className="input select">
+                  <option>Sales Invoice</option>
+                  <option>Purchase Invoice</option>
+                  <option>Payment</option>
+                  <option>Receipt</option>
+                  <option>Journal</option>
+                </select>
+              </div>
+              <div className="form-row">
+                <div className="form-group">
+                  <label className="form-label">Date</label>
+                  <input type="date" className="input" defaultValue="2024-03-28" />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Reference No.</label>
+                  <input type="text" className="input" placeholder="e.g. INV-001" />
+                </div>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Narration</label>
+                <input type="text" className="input" placeholder="Description of transaction" />
+              </div>
+              <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
+                <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setShowModal(false)}>
+                  Cancel
+                </button>
+                <button className="btn btn-primary" style={{ flex: 2 }} onClick={() => setShowModal(false)}>
+                  Create Entry
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
