@@ -88,11 +88,7 @@ export default function Topbar() {
   return (
     <header className="topbar">
       <div className="tb-logo" onClick={() => goTo('/')} style={{ cursor:'pointer' }}>
-        <div className="tb-logo-mark">F</div>
-        <div>
-          <div className="tb-logo-text">FINIX</div>
-          <span className="tb-logo-sub">INTELLIGENT FINANCE</span>
-        </div>
+        <img src="/src/assets/logo.png" alt="Finix" style={{ height: 32, width: 'auto', display: 'block' }} />
       </div>
 
       <nav className="tb-nav" ref={navRef}>
