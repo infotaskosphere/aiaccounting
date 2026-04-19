@@ -1,298 +1,253 @@
 // src/pages/GST.jsx
 import { useState } from 'react'
-import { Download, FileText, CheckSquare, AlertTriangle } from 'lucide-react'
-import toast from 'react-hot-toast'
+import { FileText, Download, CheckCircle, Clock, AlertTriangle, ChevronDown } from 'lucide-react'
 import { mockGSTSummary } from '../api/mockData'
-import { fmt } from '../utils/format'
+import { fmt, fmtCr } from '../utils/format'
 
-const periods = ['January 2024','February 2024','March 2024','April 2024']
+const PERIODS = ['March 2024', 'February 2024', 'January 2024', 'December 2023']
 
 export default function GST() {
-  const [period, setPeriod] = useState('March 2024')
-  const [activeReturn, setActiveReturn] = useState('gstr1')
-  const data = mockGSTSummary
+  const [period, setPeriod]   = useState('March 2024')
+  const [tab, setTab]         = useState('gstr1')
+  const gst = mockGSTSummary
 
-  const handleDownload = (type) => toast.success(`${type} JSON downloaded`)
+  const gstMetrics = [
+    { label: 'Output Tax (CGST)',  value: fmt(gst.output.cgst),   sub: `Taxable: ${fmtCr(gst.output.taxable)}`,  color: 'blue' },
+    { label: 'Output Tax (SGST)',  value: fmt(gst.output.sgst),   sub: `${gst.b2b_count} B2B + ${gst.b2c_count} B2C invoices`, color: 'purple' },
+    { label: 'Input Credit (ITC)', value: fmt(gst.input.cgst + gst.input.sgst), sub: 'Eligible ITC', color: 'green' },
+    { label: 'Net Tax Payable',    value: fmt(gst.net_payable.total), sub: 'CGST + SGST', color: 'red' },
+  ]
 
   return (
     <div className="page-enter">
+      {/* Header */}
       <div className="page-header">
-        <div className="page-header-left">
-          <h1>GST Reports</h1>
-          <p>GSTR-1 · GSTR-3B · Input Tax Credit · Auto-generated from transactions</p>
+        <div>
+          <h1 className="page-title">GST Reports</h1>
+          <p className="page-subtitle">GSTR-1, GSTR-3B generation and compliance tracking</p>
         </div>
-        <div className="flex gap-2">
-          <select value={period} onChange={e => setPeriod(e.target.value)} style={{ width: 180 }}>
-            {periods.map(p => <option key={p}>{p}</option>)}
-          </select>
-          <button className="btn btn-primary" onClick={() => handleDownload(activeReturn.toUpperCase())}>
-            <Download size={14} /> Download JSON
-          </button>
+        <div className="page-actions">
+          <div style={{ position: 'relative' }}>
+            <select
+              className="input select"
+              style={{ minWidth: 160 }}
+              value={period}
+              onChange={e => setPeriod(e.target.value)}
+            >
+              {PERIODS.map(p => <option key={p}>{p}</option>)}
+            </select>
+          </div>
+          <button className="btn btn-secondary"><Download size={15} /> Export JSON</button>
+          <button className="btn btn-primary"><FileText size={15} /> File Return</button>
         </div>
       </div>
 
-      <div className="page-body">
-        {/* Filing status banner */}
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 12,
-          padding: '12px 20px', borderRadius: 10, marginBottom: 20,
-          background: '#fef3c7', border: '1px solid #fde68a',
-          color: '#92400e', fontSize: '0.875rem',
-        }}>
-          <AlertTriangle size={16} />
-          <span><strong>GSTR-1 for {period}</strong> is due on April 11, 2024. 
-            All {data.b2b_count} B2B and {data.b2c_count} B2C invoices are ready.</span>
-          <button className="btn btn-sm btn-primary" style={{ marginLeft: 'auto' }}>
-            File Now
-          </button>
-        </div>
+      {/* Filing Status Banner */}
+      <div className="alert-banner warning" style={{ marginBottom: 20 }}>
+        <Clock size={15} />
+        <span className="alert-msg">GSTR-1 for {period} is due on April 11, 2024 · 7 days remaining</span>
+        <button className="alert-action">Prepare Now <FileText size={12} /></button>
+      </div>
 
-        {/* Summary cards */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 24 }}>
-          <SummaryCard title="Output Tax (Sales)" data={data.output} color="#dc2626" />
-          <SummaryCard title="Input Tax Credit (Purchases)" data={data.input} color="#16a34a" />
-          <div className="card" style={{ padding: '20px 22px' }}>
-            <div style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#9b9590', marginBottom: 12 }}>
-              Net GST Payable
+      {/* KPI Cards */}
+      <div className="kpi-grid" style={{ marginBottom: 24 }}>
+        {gstMetrics.map(m => (
+          <div key={m.label} className={`kpi-card ${m.color}`}>
+            <div className="kpi-label">{m.label}</div>
+            <div className="kpi-value" style={{ fontSize: '1.5rem' }}>₹{m.value}</div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-3)', marginTop: 4 }}>{m.sub}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Tabs */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 20, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: 4, width: 'fit-content' }}>
+        {[
+          { key: 'gstr1',  label: 'GSTR-1' },
+          { key: 'gstr3b', label: 'GSTR-3B' },
+          { key: 'itc',    label: 'Input Tax Credit' },
+        ].map(t => (
+          <button
+            key={t.key}
+            className={tab === t.key ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm'}
+            onClick={() => setTab(t.key)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="grid-2" style={{ gap: 20 }}>
+        {/* Left: Summary */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* Output tax breakdown */}
+          <div className="card">
+            <div className="card-header">
+              <span className="card-title">Output Tax Summary</span>
+              <span className="badge badge-blue">{period}</span>
             </div>
-            {[
-              { label: 'CGST', value: data.net_payable.cgst },
-              { label: 'SGST', value: data.net_payable.sgst },
-              { label: 'IGST', value: data.net_payable.igst },
-            ].map(r => (
-              <div key={r.label} className="flex justify-between" style={{ marginBottom: 8 }}>
-                <span style={{ fontSize: '0.857rem', color: '#5a5750' }}>{r.label}</span>
-                <span style={{ fontWeight: 600, color: r.value > 0 ? '#dc2626' : '#9b9590' }}>₹{fmt(r.value)}</span>
-              </div>
-            ))}
-            <div style={{ borderTop: '1px solid #e5e1d8', paddingTop: 10, marginTop: 4 }}>
-              <div className="flex justify-between">
-                <span style={{ fontWeight: 600 }}>Total Payable</span>
-                <span style={{ fontFamily: 'DM Serif Display, serif', fontSize: '1.2rem', color: '#dc2626' }}>
-                  ₹{fmt(data.net_payable.total)}
+            <div className="card-body">
+              {[
+                { label: 'Taxable Turnover', value: fmt(gst.output.taxable), mono: true },
+                { label: 'CGST Collected',   value: fmt(gst.output.cgst),    color: 'var(--primary)' },
+                { label: 'SGST Collected',   value: fmt(gst.output.sgst),    color: '#7C3AED' },
+                { label: 'IGST Collected',   value: fmt(gst.output.igst),    color: 'var(--info)' },
+              ].map(row => (
+                <div key={row.label} style={{
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  padding: '10px 0', borderBottom: '1px solid var(--border)'
+                }}>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-2)' }}>{row.label}</span>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.9rem', fontWeight: 700, color: row.color || 'var(--text)' }}>
+                    ₹{row.value}
+                  </span>
+                </div>
+              ))}
+              <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 12 }}>
+                <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>Total Output Tax</span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '1rem', color: 'var(--text)' }}>
+                  ₹{fmt(gst.output.cgst + gst.output.sgst + gst.output.igst)}
                 </span>
               </div>
             </div>
           </div>
-        </div>
 
-        {/* Return tabs */}
-        <div className="card">
-          <div className="card-header" style={{ paddingBottom: 0 }}>
-            <div className="flex gap-2">
+          {/* ITC Summary */}
+          <div className="card">
+            <div className="card-header">
+              <span className="card-title">Input Tax Credit (ITC)</span>
+              <span className="badge badge-green">Eligible</span>
+            </div>
+            <div className="card-body">
               {[
-                { id: 'gstr1', label: 'GSTR-1 (Outward Supplies)' },
-                { id: 'gstr3b', label: 'GSTR-3B (Summary)' },
-                { id: 'itc', label: 'ITC Reconciliation' },
-              ].map(tab => (
-                <button key={tab.id}
-                  className={`btn btn-sm ${activeReturn === tab.id ? 'btn-primary' : 'btn-ghost'}`}
-                  onClick={() => setActiveReturn(tab.id)} style={{ borderRadius: '6px 6px 0 0' }}>
-                  {tab.label}
-                </button>
+                { label: 'CGST Input',  value: fmt(gst.input.cgst) },
+                { label: 'SGST Input',  value: fmt(gst.input.sgst) },
+                { label: 'IGST Input',  value: fmt(gst.input.igst) },
+              ].map(row => (
+                <div key={row.label} style={{
+                  display: 'flex', justifyContent: 'space-between',
+                  padding: '10px 0', borderBottom: '1px solid var(--border)'
+                }}>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-2)' }}>{row.label}</span>
+                  <span className="amt-cr">₹{row.value}</span>
+                </div>
               ))}
+              <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 12 }}>
+                <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>Total ITC</span>
+                <span className="amt-cr" style={{ fontSize: '1rem', fontWeight: 800 }}>
+                  ₹{fmt(gst.input.cgst + gst.input.sgst + gst.input.igst)}
+                </span>
+              </div>
             </div>
           </div>
 
-          {activeReturn === 'gstr1' && (
-            <div>
-              <div style={{ padding: '16px 24px', background: '#f7f5f0', borderBottom: '1px solid #e5e1d8' }}>
-                <div className="flex gap-4">
-                  {[
-                    { label: 'B2B Invoices', count: data.b2b_count, color: '#2563eb' },
-                    { label: 'B2C Invoices', count: data.b2c_count, color: '#7c3aed' },
-                    { label: 'Exports', count: 0, color: '#16a34a' },
-                    { label: 'Nil Rated', count: 0, color: '#9b9590' },
-                  ].map(s => (
-                    <div key={s.label} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <div style={{ width: 8, height: 8, borderRadius: '50%', background: s.color }} />
-                      <span style={{ fontSize: '0.8rem', color: '#5a5750' }}>{s.label}: <strong>{s.count}</strong></span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div className="table-wrap" style={{ borderRadius: 0, border: 'none', boxShadow: 'none' }}>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Invoice No.</th>
-                      <th>Party Name</th>
-                      <th>GSTIN</th>
-                      <th className="text-right">Taxable Value</th>
-                      <th className="text-right">CGST</th>
-                      <th className="text-right">SGST</th>
-                      <th className="text-right">IGST</th>
-                      <th className="text-right">Invoice Total</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.transactions.map(t => (
-                      <tr key={t.invoice_no}>
-                        <td className="mono">{t.invoice_no}</td>
-                        <td style={{ fontWeight: 500 }}>{t.party}</td>
-                        <td className="mono" style={{ fontSize: '0.78rem', color: '#9b9590' }}>{t.gstin}</td>
-                        <td className="amount">₹{fmt(t.taxable)}</td>
-                        <td className="amount" style={{ color: '#dc2626' }}>₹{fmt(t.cgst)}</td>
-                        <td className="amount" style={{ color: '#dc2626' }}>₹{fmt(t.sgst)}</td>
-                        <td className="amount" style={{ color: '#9b9590' }}>—</td>
-                        <td className="amount" style={{ fontWeight: 600 }}>₹{fmt(t.total)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot>
-                    <tr style={{ background: '#f7f5f0', fontWeight: 600 }}>
-                      <td colSpan={3} style={{ padding: '12px 16px', fontWeight: 600, fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Total</td>
-                      <td className="amount">₹{fmt(data.output.taxable)}</td>
-                      <td className="amount" style={{ color: '#dc2626' }}>₹{fmt(data.output.cgst)}</td>
-                      <td className="amount" style={{ color: '#dc2626' }}>₹{fmt(data.output.sgst)}</td>
-                      <td className="amount">—</td>
-                      <td className="amount">₹{fmt(data.output.total)}</td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {activeReturn === 'gstr3b' && (
+          {/* Net payable */}
+          <div className="card" style={{ border: '2px solid var(--danger-light)', background: '#FFF7F7' }}>
             <div className="card-body">
-              <div className="grid-2" style={{ gap: 20 }}>
-                {/* Table 3.1 */}
-                <div>
-                  <h4 style={{ marginBottom: 12 }}>3.1 — Outward Supplies</h4>
-                  <GSTR3BTable rows={[
-                    { label: 'Taxable outward supplies (B2B+B2C)', taxable: data.output.taxable, cgst: data.output.cgst, sgst: data.output.sgst, igst: data.output.igst },
-                    { label: 'Zero-rated supplies (exports)', taxable: 0, cgst: 0, sgst: 0, igst: 0 },
-                    { label: 'Nil/exempt supplies', taxable: 0, cgst: 0, sgst: 0, igst: 0 },
-                  ]} />
-                </div>
-                {/* Table 4 */}
-                <div>
-                  <h4 style={{ marginBottom: 12 }}>4 — Eligible ITC</h4>
-                  <GSTR3BTable rows={[
-                    { label: 'Import of goods', taxable: 0, cgst: 0, sgst: 0, igst: 0 },
-                    { label: 'All other ITC', taxable: data.input.taxable, cgst: data.input.cgst, sgst: data.input.sgst, igst: data.input.igst },
-                  ]} />
-                </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <span style={{ fontFamily: 'var(--font-display)', fontSize: '1rem', fontWeight: 700 }}>
+                  Net Tax Payable
+                </span>
+                <AlertTriangle size={16} color="var(--danger)" />
               </div>
-              {/* Net payable */}
-              <div style={{ marginTop: 24, padding: '16px 20px', background: '#fef3c7', borderRadius: 10, border: '1px solid #fde68a' }}>
-                <h4 style={{ marginBottom: 12 }}>6.1 — Tax Payable (after ITC)</h4>
-                <div className="flex gap-8">
-                  {[
-                    { label: 'CGST Payable', value: data.net_payable.cgst },
-                    { label: 'SGST Payable', value: data.net_payable.sgst },
-                    { label: 'IGST Payable', value: data.net_payable.igst },
-                    { label: 'Total', value: data.net_payable.total, bold: true },
-                  ].map(r => (
-                    <div key={r.label}>
-                      <div style={{ fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#92400e', marginBottom: 3 }}>{r.label}</div>
-                      <div style={{ fontFamily: r.bold ? 'DM Serif Display, serif' : 'inherit', fontSize: r.bold ? '1.2rem' : '1rem', fontWeight: r.bold ? 400 : 600, color: '#92400e' }}>
-                        ₹{fmt(r.value)}
-                      </div>
-                    </div>
-                  ))}
+              {[
+                { label: 'CGST Payable', value: fmt(gst.net_payable.cgst) },
+                { label: 'SGST Payable', value: fmt(gst.net_payable.sgst) },
+              ].map(row => (
+                <div key={row.label} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <span style={{ fontSize: '0.83rem', color: 'var(--text-2)' }}>{row.label}</span>
+                  <span className="amt-dr">₹{row.value}</span>
                 </div>
+              ))}
+              <div style={{ height: 1, background: '#FCA5A5', margin: '10px 0' }} />
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ fontWeight: 700 }}>Total</span>
+                <span className="amt-dr" style={{ fontSize: '1.1rem', fontWeight: 800 }}>
+                  ₹{fmt(gst.net_payable.total)}
+                </span>
               </div>
+              <button className="btn btn-danger" style={{ width: '100%', justifyContent: 'center', marginTop: 14 }}>
+                Pay via GST Portal
+              </button>
             </div>
-          )}
+          </div>
+        </div>
 
-          {activeReturn === 'itc' && (
-            <div className="card-body">
-              <p className="text-sm text-muted mb-3">
-                Input Tax Credit available vs claimed. Discrepancies highlighted in amber.
-              </p>
-              <div className="table-wrap" style={{ borderRadius: 8 }}>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Account</th>
-                      <th className="text-right">As per GSTR-2B</th>
-                      <th className="text-right">As per Books</th>
-                      <th className="text-right">Difference</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[
-                      { acc: 'Input CGST', gstr: 38400, books: 38400, diff: 0 },
-                      { acc: 'Input SGST', gstr: 38400, books: 38400, diff: 0 },
-                      { acc: 'Input IGST', gstr: 0,     books: 0,     diff: 0 },
-                    ].map(r => (
-                      <tr key={r.acc}>
-                        <td style={{ fontWeight: 500 }}>{r.acc}</td>
-                        <td className="amount">₹{fmt(r.gstr)}</td>
-                        <td className="amount">₹{fmt(r.books)}</td>
-                        <td className="amount" style={{ color: r.diff !== 0 ? '#d97706' : '#16a34a' }}>
-                          {r.diff !== 0 ? `₹${fmt(Math.abs(r.diff))}` : '—'}
-                        </td>
-                        <td>
-                          <span className={`badge ${r.diff === 0 ? 'badge-green' : 'badge-amber'}`}>
-                            {r.diff === 0 ? 'Reconciled' : 'Mismatch'}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+        {/* Right: Transactions table */}
+        <div className="card">
+          <div className="card-header" style={{ paddingBottom: 14 }}>
+            <span className="card-title">B2B Invoices — {period}</span>
+            <span className="badge badge-gray">{gst.transactions.length} invoices</span>
+          </div>
+          <div style={{ borderTop: '1px solid var(--border)' }}>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>Invoice No.</th>
+                  <th>Party</th>
+                  <th>GSTIN</th>
+                  <th style={{ textAlign: 'right' }}>Taxable</th>
+                  <th style={{ textAlign: 'right' }}>CGST</th>
+                  <th style={{ textAlign: 'right' }}>SGST</th>
+                  <th style={{ textAlign: 'right' }}>Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {gst.transactions.map(t => (
+                  <tr key={t.invoice_no}>
+                    <td>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', color: 'var(--primary)', fontWeight: 600 }}>
+                        {t.invoice_no}
+                      </span>
+                    </td>
+                    <td style={{ maxWidth: 160 }}>
+                      <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.85rem' }}>
+                        {t.party}
+                      </span>
+                    </td>
+                    <td>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--text-3)' }}>
+                        {t.gstin}
+                      </span>
+                    </td>
+                    <td style={{ textAlign: 'right' }}>
+                      <span className="amt-neutral">₹{fmt(t.taxable)}</span>
+                    </td>
+                    <td style={{ textAlign: 'right' }}>
+                      <span className="amt-neutral">₹{fmt(t.cgst)}</span>
+                    </td>
+                    <td style={{ textAlign: 'right' }}>
+                      <span className="amt-neutral">₹{fmt(t.sgst)}</span>
+                    </td>
+                    <td style={{ textAlign: 'right' }}>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--text)' }}>
+                        ₹{fmt(t.total)}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr style={{ background: 'var(--surface-2)' }}>
+                  <td colSpan={3} style={{ padding: '12px 16px', fontWeight: 700, fontSize: '0.85rem' }}>Total</td>
+                  <td style={{ textAlign: 'right', padding: '12px 16px', fontFamily: 'var(--font-mono)', fontWeight: 700 }}>
+                    ₹{fmt(gst.transactions.reduce((s, t) => s + t.taxable, 0))}
+                  </td>
+                  <td style={{ textAlign: 'right', padding: '12px 16px', fontFamily: 'var(--font-mono)', fontWeight: 700 }}>
+                    ₹{fmt(gst.transactions.reduce((s, t) => s + t.cgst, 0))}
+                  </td>
+                  <td style={{ textAlign: 'right', padding: '12px 16px', fontFamily: 'var(--font-mono)', fontWeight: 700 }}>
+                    ₹{fmt(gst.transactions.reduce((s, t) => s + t.sgst, 0))}
+                  </td>
+                  <td style={{ textAlign: 'right', padding: '12px 16px', fontFamily: 'var(--font-mono)', fontWeight: 800, color: 'var(--primary)' }}>
+                    ₹{fmt(gst.transactions.reduce((s, t) => s + t.total, 0))}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
         </div>
       </div>
     </div>
-  )
-}
-
-function SummaryCard({ title, data, color }) {
-  return (
-    <div className="card" style={{ padding: '20px 22px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
-        <div style={{ width: 3, height: 16, borderRadius: 2, background: color }} />
-        <span style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#9b9590', fontWeight: 500 }}>{title}</span>
-      </div>
-      {[
-        { label: 'Taxable Value', value: data.taxable },
-        { label: 'CGST', value: data.cgst },
-        { label: 'SGST', value: data.sgst },
-        { label: 'IGST', value: data.igst },
-      ].map(r => (
-        <div key={r.label} className="flex justify-between" style={{ marginBottom: 6 }}>
-          <span style={{ fontSize: '0.8rem', color: '#5a5750' }}>{r.label}</span>
-          <span style={{ fontWeight: 500, fontSize: '0.875rem' }}>₹{fmt(r.value)}</span>
-        </div>
-      ))}
-      <div style={{ borderTop: '1px solid #e5e1d8', paddingTop: 8, marginTop: 4 }}>
-        <div className="flex justify-between">
-          <span style={{ fontWeight: 600, fontSize: '0.857rem' }}>Total</span>
-          <span style={{ fontFamily: 'DM Serif Display, serif', fontSize: '1.1rem', color }}>₹{fmt(data.total)}</span>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function GSTR3BTable({ rows }) {
-  return (
-    <table style={{ fontSize: '0.8rem' }}>
-      <thead>
-        <tr>
-          <th>Nature of Supply</th>
-          <th className="text-right">CGST</th>
-          <th className="text-right">SGST</th>
-          <th className="text-right">IGST</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((r, i) => (
-          <tr key={i}>
-            <td style={{ maxWidth: 180, paddingRight: 8 }}>{r.label}</td>
-            <td className="amount">₹{fmt(r.cgst)}</td>
-            <td className="amount">₹{fmt(r.sgst)}</td>
-            <td className="amount">₹{fmt(r.igst)}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
   )
 }
