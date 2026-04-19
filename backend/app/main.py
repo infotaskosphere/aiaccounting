@@ -7,11 +7,12 @@ All routes, middleware, and startup logic.
 
 from __future__ import annotations
 
+import os
 import asyncpg
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Header
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Header, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings
@@ -31,12 +32,17 @@ log = structlog.get_logger()
 
 class Settings(BaseSettings):
     database_url:      str = "postgresql://accounting:password@localhost/accounting"
-    redis_url:         str = "redis://localhost:6379/0"
     secret_key:        str = "change-me-in-production"
     razorpay_key:      str = ""
     razorpay_secret:   str = ""
     anthropic_api_key: str = ""
     environment:       str = "development"
+    # RENDER FREE TIER: frontend URL for CORS — set this in Render environment variables
+    # e.g. FRONTEND_URL=https://your-frontend.onrender.com
+    frontend_url:      str = "http://localhost:3000"
+
+    # redis_url removed — Celery/Redis not used on Render free tier.
+    # Background tasks use FastAPI's built-in BackgroundTasks instead.
 
     class Config:
         env_file = ".env"
@@ -59,9 +65,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     )
     log.info("Database pool created")
 
-    # Pre-load AI classifier (model download happens at Docker build time)
-    app.state.classifier = TransactionClassifier()
-    log.info("AI classifier ready")
+    # ── RENDER FREE TIER GUARD ────────────────────────────────────────────────
+    # TransactionClassifier tries to load sentence-transformers which is NOT
+    # installed on Render free tier. We catch any failure here so the app
+    # still starts. The classifier will use rule-based matching as fallback.
+    try:
+        app.state.classifier = TransactionClassifier()
+        log.info("AI classifier ready")
+    except Exception as exc:
+        app.state.classifier = TransactionClassifier.__new__(TransactionClassifier)
+        app.state.classifier.model = None
+        app.state.classifier._account_embeddings = {}
+        app.state.classifier._account_index = []
+        app.state.classifier._learned_map = {}
+        log.warning("AI classifier loaded in fallback mode (rule-based only)", error=str(exc))
+    # ─────────────────────────────────────────────────────────────────────────
 
     yield
 
@@ -82,13 +100,26 @@ app = FastAPI(
     redoc_url="/api/redoc",
 )
 
+# ── RENDER FREE TIER: CORS ────────────────────────────────────────────────────
+# Allow both local dev and the deployed Render frontend URL.
+# Set FRONTEND_URL in your Render environment variables to your frontend's URL,
+# e.g.  FRONTEND_URL=https://ledgrai-frontend.onrender.com
+_allowed_origins = [
+    "http://localhost:3000",          # local dev
+    "http://localhost:5173",          # vite dev fallback
+    settings.frontend_url,            # production Render URL from env var
+]
+# Remove duplicates and empty strings
+_allowed_origins = list(set(o for o in _allowed_origins if o))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],   # React dev server
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
@@ -97,7 +128,15 @@ app.add_middleware(
 async def health(db=Depends(get_pool)):
     async with db.acquire() as conn:
         await conn.fetchval("SELECT 1")
-    return {"status": "ok", "environment": settings.environment}
+    from ai.classifier import EMBEDDINGS_AVAILABLE, OCR_AVAILABLE
+    return {
+        "status": "ok",
+        "environment": settings.environment,
+        "features": {
+            "ai_embeddings": EMBEDDINGS_AVAILABLE,
+            "ocr": OCR_AVAILABLE,
+        }
+    }
 
 
 # ── Vouchers ──────────────────────────────────────────────────────────────────
@@ -177,7 +216,19 @@ async def import_bank_statement(
     elif filename.endswith((".xlsx", ".xls")):
         transactions = parser.parse_excel(content)
     elif filename.endswith(".pdf"):
+        # pdfplumber works on Render (no system deps needed).
+        # Scanned PDFs (image-based) will return 0 transactions since OCR
+        # is unavailable on Render free tier.
         transactions = parser.parse_pdf(content)
+        if not transactions:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "No transactions found in this PDF. "
+                    "If it is a scanned/image-based statement, "
+                    "please export it as CSV or Excel from your bank instead."
+                )
+            )
     else:
         raise HTTPException(400, "Unsupported file type. Use CSV, Excel, or PDF.")
 
@@ -322,7 +373,6 @@ async def gstr1_report(company_id: str, period: str, db=Depends(get_pool)):
         )
 
     gst_engine = GSTEngine()
-    # Convert DB rows to GSTTransaction objects (simplified)
     from compliance.gst import GSTTransaction
     from datetime import date
     from decimal import Decimal
