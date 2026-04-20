@@ -1,10 +1,11 @@
 // src/pages/Bank.jsx
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { useSearchParams } from 'react-router-dom'
 import { Upload, CheckCircle, X, Zap, AlertCircle, RefreshCw, FileText, CreditCard } from 'lucide-react'
 import toast from 'react-hot-toast'
-import { mockBankTransactions } from '../api/mockData'
+import { getCompanyData } from '../api/mockData'
+import { useAuth } from '../context/AuthContext'
 import { fmt, fmtDate } from '../utils/format'
 
 const statusBadge = {
@@ -26,13 +27,18 @@ const ConfBar = ({ value, color }) => (
 )
 
 export default function Bank() {
+  const { activeCompany } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
   const tab = searchParams.get('tab') || 'accounts'
-  const [transactions, setTransactions] = useState(mockBankTransactions)
+  const [transactions, setTransactions] = useState(() => getCompanyData(activeCompany?.id).bankTransactions)
   const [filter, setFilter]             = useState('all')
   const [loading, setLoading]           = useState(false)
   const [uploadedFile, setUploadedFile] = useState(null)
 
+  // Refresh transactions when company changes
+  useEffect(() => {
+    setTransactions(getCompanyData(activeCompany?.id).bankTransactions)
+  }, [activeCompany?.id])
   const onDrop = useCallback(files => {
     const file = files[0]
     if (!file) return
