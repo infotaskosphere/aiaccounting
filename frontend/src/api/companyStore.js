@@ -92,6 +92,13 @@ export function updateBankTransaction(companyId, txnId, updates) {
   saveCompanyData(companyId, data)
 }
 
+// ── Clear all bank transactions ───────────────────────────────────────────
+export function clearBankTransactions(companyId) {
+  const data = loadCompanyData(companyId)
+  data.bankTransactions = []
+  saveCompanyData(companyId, data)
+}
+
 // ── Recalculate dashboard totals from voucher list ────────────────────────
 function recalcDashboard(data) {
   let income = 0, expenses = 0
