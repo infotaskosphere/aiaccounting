@@ -1,15 +1,17 @@
 // src/pages/GST.jsx
 import { useState } from 'react'
 import { FileText, Download, CheckCircle, Clock, AlertTriangle, ChevronDown } from 'lucide-react'
-import { mockGSTSummary } from '../api/mockData'
+import { getCompanyData } from '../api/mockData'
+import { useAuth } from '../context/AuthContext'
 import { fmt, fmtCr } from '../utils/format'
 
 const PERIODS = ['March 2024', 'February 2024', 'January 2024', 'December 2023']
 
 export default function GST() {
+  const { activeCompany } = useAuth()
   const [period, setPeriod]   = useState('March 2024')
   const [tab, setTab]         = useState('gstr1')
-  const gst = mockGSTSummary
+  const gst = getCompanyData(activeCompany?.id).gst
 
   const gstMetrics = [
     { label: 'Output Tax (CGST)',  value: fmt(gst.output.cgst),   sub: `Taxable: ${fmtCr(gst.output.taxable)}`,  color: 'blue' },
