@@ -3,6 +3,8 @@ import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Download, TrendingUp, BarChart2, ArrowLeftRight, Info } from 'lucide-react'
 import { fmt } from '../utils/format'
+import { computeFinancials } from '../api/companyStore'
+import { useAuth } from '../context/AuthContext'
 
 // ─── Data ────────────────────────────────────────────────────────────────────
 
@@ -417,8 +419,12 @@ function CashFlow() {
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function Reports() {
+  const { activeCompany } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
   const tab = searchParams.get('tab') || 'pl'
+
+  const fin = computeFinancials(activeCompany?.id)
+  const isSampleData = !fin.hasRealData
 
   const TABS = [
     { key:'pl',            label:'P & L Statement',  icon:TrendingUp },
@@ -444,6 +450,14 @@ export default function Reports() {
           <button className="btn btn-secondary"><Download size={15}/> Export Excel</button>
         </div>
       </div>
+
+      {/* Sample data banner */}
+      {isSampleData && (
+        <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px', background:'#FFF7ED', border:'1px solid #FED7AA', borderRadius:10, marginBottom:16, fontSize:13 }}>
+          <Info size={15} color="#D97706"/>
+          <span style={{ color:'#92400E' }}><strong>Sample Data</strong> — No real vouchers posted yet. This report shows demo data. Post entries from the Dashboard to see your actual financials.</span>
+        </div>
+      )}
 
       {/* Tabs */}
       <div style={{ display:'flex', gap:2, marginBottom:20, background:'var(--surface-2)', padding:4, borderRadius:'var(--r-md)', width:'fit-content', border:'1px solid var(--border)' }}>
