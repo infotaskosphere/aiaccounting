@@ -182,3 +182,84 @@ select.input {
   --font-mono:      'IBM Plex Mono', 'Courier New', monospace;
   --font-display:   'IBM Plex Sans', system-ui, sans-serif;
 }
+
+/* ══════════════════════════════════════════════════════════════
+   PATCH: Missing class aliases found in Bank, GST, Reports,
+   Payroll, TrialBalance pages
+   ══════════════════════════════════════════════════════════════ */
+
+/* card-header → same as card-head */
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.card-header .card-title { font-size: var(--fs-sm); font-weight: 600; color: var(--text); }
+
+/* alert-banner → same as alert-bar pattern but self-contained */
+.alert-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--r-lg);
+  border: 1px solid transparent;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+.alert-banner.success {
+  background: var(--success-l);
+  color: #14532D;
+  border-color: var(--success-b);
+}
+.alert-banner.warning {
+  background: var(--warning-l);
+  color: #78350F;
+  border-color: var(--warning-b);
+}
+.alert-banner.error {
+  background: var(--danger-l);
+  color: #7F1D1D;
+  border-color: var(--danger-b);
+}
+.alert-banner.info {
+  background: var(--info-l);
+  color: #0C4A6E;
+  border-color: var(--info-b);
+}
+.alert-banner .alert-msg { flex: 1; }
+.alert-banner .alert-action {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: var(--r-md);
+  border: 1px solid currentColor;
+  background: transparent;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  cursor: pointer;
+  color: inherit;
+  opacity: .8;
+  transition: opacity var(--dur);
+}
+.alert-banner .alert-action:hover { opacity: 1; }
+
+/* progress-wrap / progress-fill → same as prog-wrap/prog-fill */
+.progress-wrap {
+  background: var(--bg);
+  border-radius: 99px;
+  height: 5px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  border-radius: 99px;
+  transition: width .5s var(--ease);
+}
+
+/* cr / dr color classes used in Dashboard recent-transactions table */
+.cr { color: var(--success); font-family: var(--mono); font-weight: 600; }
+.dr { color: var(--danger);  font-family: var(--mono); font-weight: 600; }
