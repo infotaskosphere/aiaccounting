@@ -99,6 +99,100 @@ export function clearBankTransactions(companyId) {
   saveCompanyData(companyId, data)
 }
 
+// ── Add multiple vouchers at once (bulk import) ───────────────────────────
+export function addVouchers(companyId, vouchers) {
+  const data = loadCompanyData(companyId)
+  const newVouchers = vouchers.map(v => ({
+    id: `v-${Date.now()}-${Math.random().toString(36).slice(2,7)}`,
+    voucher_no: generateVoucherNo(data.vouchers, v.voucher_type || v.type),
+    ...v,
+    voucher_type: v.voucher_type || v.type || 'journal',
+    status: 'posted',
+    source: v.source || 'bulk_import',
+    created_at: new Date().toISOString(),
+  }))
+  data.vouchers = [...newVouchers, ...data.vouchers]
+  data.dashboard.recentVouchers = data.vouchers.slice(0, 10)
+  recalcDashboard(data)
+  saveCompanyData(companyId, data)
+  return newVouchers
+}
+
+// ── Compute full P&L and Balance Sheet from vouchers ─────────────────────
+export function computeFinancials(companyId) {
+  const data = loadCompanyData(companyId)
+  const vouchers = data.vouchers || []
+
+  const income    = vouchers.filter(v => ['sales','receipt'].includes(v.voucher_type)).reduce((s,v) => s + (Number(v.amount)||0), 0)
+  const expenses  = vouchers.filter(v => ['purchase','payment'].includes(v.voucher_type)).reduce((s,v) => s + (Number(v.amount)||0), 0)
+  const cgstOut   = vouchers.filter(v => ['sales'].includes(v.voucher_type)).reduce((s,v) => s + (Number(v.cgst)||0), 0)
+  const sgstOut   = vouchers.filter(v => ['sales'].includes(v.voucher_type)).reduce((s,v) => s + (Number(v.sgst)||0), 0)
+  const cgstIn    = vouchers.filter(v => ['purchase'].includes(v.voucher_type)).reduce((s,v) => s + (Number(v.cgst)||0), 0)
+  const sgstIn    = vouchers.filter(v => ['purchase'].includes(v.voucher_type)).reduce((s,v) => s + (Number(v.sgst)||0), 0)
+
+  // Build trial balance from vouchers grouped by narration type
+  const accountMap = {}
+  const addEntry = (name, group, dr, cr) => {
+    if (!accountMap[name]) accountMap[name] = { name, group, dr: 0, cr: 0 }
+    accountMap[name].dr += dr
+    accountMap[name].cr += cr
+  }
+
+  vouchers.forEach(v => {
+    const amt = Number(v.amount) || 0
+    const cgst = Number(v.cgst) || 0
+    const sgst = Number(v.sgst) || 0
+    const igst = Number(v.igst) || 0
+    const total = amt + cgst + sgst + igst
+    const party = v.party || 'General'
+
+    if (v.voucher_type === 'sales') {
+      addEntry('Sales Revenue', 'Revenue from Operations', 0, amt)
+      addEntry(party + ' (Debtor)', 'Trade Receivables', total, 0)
+      if (cgst) addEntry('Output GST - CGST', 'Other Current Liabilities', 0, cgst)
+      if (sgst) addEntry('Output GST - SGST', 'Other Current Liabilities', 0, sgst)
+      if (igst) addEntry('Output GST - IGST', 'Other Current Liabilities', 0, igst)
+    } else if (v.voucher_type === 'purchase') {
+      addEntry('Purchases', 'Cost of Goods Sold', amt, 0)
+      addEntry(party + ' (Creditor)', 'Trade Payables', 0, total)
+      if (cgst) addEntry('Input GST - CGST', 'Other Current Assets', cgst, 0)
+      if (sgst) addEntry('Input GST - SGST', 'Other Current Assets', sgst, 0)
+      if (igst) addEntry('Input GST - IGST', 'Other Current Assets', igst, 0)
+    } else if (v.voucher_type === 'receipt') {
+      addEntry('Bank / Cash', 'Cash & Cash Equivalents', amt, 0)
+      addEntry(party + ' (Debtor)', 'Trade Receivables', 0, amt)
+    } else if (v.voucher_type === 'payment') {
+      addEntry(party + ' (Creditor)', 'Trade Payables', amt, 0)
+      addEntry('Bank / Cash', 'Cash & Cash Equivalents', 0, amt)
+    } else {
+      addEntry(v.narration || 'Journal Entry', 'Journal', amt, 0)
+    }
+  })
+
+  const trialBalance = Object.values(accountMap).map((a, i) => ({
+    code: String(1000 + i),
+    name: a.name,
+    group: a.group,
+    opDr: 0, opCr: 0,
+    txDr: a.dr, txCr: a.cr,
+    clDr: a.dr > a.cr ? a.dr - a.cr : 0,
+    clCr: a.cr > a.dr ? a.cr - a.dr : 0,
+  }))
+
+  return {
+    income, expenses,
+    net_profit: income - expenses,
+    assets: income,
+    liabilities: expenses,
+    equity: income - expenses,
+    cgstOut, sgstOut, cgstIn, sgstIn,
+    netGST: (cgstOut + sgstOut) - (cgstIn + sgstIn),
+    trialBalance,
+    vouchers,
+    hasRealData: vouchers.length > 0,
+  }
+}
+
 // ── Recalculate dashboard totals from voucher list ────────────────────────
 function recalcDashboard(data) {
   let income = 0, expenses = 0
