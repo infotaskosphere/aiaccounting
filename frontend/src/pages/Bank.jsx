@@ -129,6 +129,10 @@ export default function Bank() {
         const detail = errBody.detail || `Server error ${response.status}`
         if (response.status === 503) throw new Error('AI not configured on server. Add ANTHROPIC_API_KEY to backend .env')
         if (response.status === 401) throw new Error('Session expired. Please log in again.')
+        if (response.status === 404) throw new Error(
+          'Backend endpoint not found (404). The backend needs to be redeployed with the latest main.py. ' +
+          'Push your code changes to trigger a Render redeploy.'
+        )
         throw new Error(detail)
       }
 
@@ -137,6 +141,10 @@ export default function Bank() {
 
       setParseProgress(95)
       setParseStatus(`Saving ${total_parsed} transactions…`)
+
+      if (result.data?.warning) {
+        toast(`⚠️ ${result.data.warning}`, { duration: 6000, icon: '⚠️' })
+      }
 
       if (!parsed || parsed.length === 0) {
         throw new Error('No transactions found. Check that the file is a valid bank statement.')
