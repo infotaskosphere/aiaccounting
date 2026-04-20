@@ -1,55 +1,46 @@
-# ============================================================
-# requirements.txt — AI Accounting Software
-# ============================================================
+# requirements.txt (v2 — UPGRADED)
+# Core framework
+fastapi==0.111.1
+uvicorn[standard]==0.30.1
+pydantic==2.7.4
+pydantic-settings==2.3.4
 
-# ── Web Framework ────────────────────────────────────────────
-fastapi==0.111.0
-uvicorn[standard]==0.29.0
-python-multipart==0.0.9       # file uploads
+# Database
+asyncpg==0.29.0
 
-# ── Database ─────────────────────────────────────────────────
-asyncpg==0.29.0               # async PostgreSQL driver
-sqlalchemy[asyncio]==2.0.30
-alembic==1.13.1               # migrations
-psycopg2-binary==2.9.9        # sync driver (for alembic/scripts)
-
-# ── Auth ─────────────────────────────────────────────────────
+# Auth
 python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
+bcrypt==4.1.3
+passlib==1.7.4
 
-# ── Task Queue ───────────────────────────────────────────────
-celery==5.4.0
-redis==5.0.4
-redbeat==2.2.0                # Redis-backed celery beat scheduler
-
-# ── AI / ML ──────────────────────────────────────────────────
-sentence-transformers==3.0.1  # semantic embeddings
+# AI / NLP
+anthropic>=0.28.0          # Smart Assistant + AI summaries
+rapidfuzz==3.9.3           # Fuzzy matching for reconciliation
 numpy==1.26.4
-scikit-learn==1.5.0           # IQR anomaly detection
-rapidfuzz==3.9.3              # fast fuzzy string matching
-anthropic==0.28.0             # Claude API for ambiguous narrations
 
-# ── OCR ──────────────────────────────────────────────────────
-pytesseract==0.3.13
-Pillow==10.3.0
-pdf2image==1.17.0
+# Optional: enable for full AI embeddings (requires ~400MB RAM)
+# sentence-transformers==3.0.1
 
-# ── Document Parsing ─────────────────────────────────────────
-pdfplumber==0.11.1            # structured PDF bank statements
-openpyxl==3.1.2               # Excel read/write
-pandas==2.2.2                 # dataframe processing
-xlrd==2.0.1                   # legacy .xls support
+# File parsing
+pdfplumber==0.11.4         # PDF bank statement parsing
+openpyxl==3.1.5            # Excel parsing
+python-multipart==0.0.9    # File upload support
 
-# ── PDF Generation (reports) ─────────────────────────────────
-weasyprint==62.3              # HTML → PDF financial reports
-jinja2==3.1.4                 # report templates
+# Optional: OCR for scanned PDFs (requires tesseract system binary)
+# pytesseract==0.3.13
+# pdf2image==1.17.0
+# Pillow==10.4.0
 
-# ── Validation ───────────────────────────────────────────────
-pydantic==2.7.1
-pydantic-settings==2.3.0
-
-# ── Monitoring ───────────────────────────────────────────────
+# Observability
 structlog==24.2.0
 
-# ── Forecasting (Phase 5) ────────────────────────────────────
-# prophet==1.1.5              # uncomment in Phase 5
+# Compliance
+# (GST + Payroll logic is pure Python, no extra deps)
+
+# Testing
+pytest==8.3.2
+pytest-asyncio==0.23.8
+httpx==0.27.0              # For API integration tests
+
+# Linting (dev only)
+# ruff==0.5.0
