@@ -16,41 +16,41 @@ const NAV = [
   {
     key:'accounting', label:'Accounting', icon:BookOpen,
     children:[
-      { label:'Journal & Ledger',  icon:List,           to:'/journal',       desc:'All vouchers and entries' },
-      { label:'Chart of Accounts', icon:FileSpreadsheet,to:'/accounts',      desc:'Account master list' },
-      { label:'Trial Balance',     icon:BarChart2,      to:'/trial-balance', desc:'Dr/Cr summary' },
+      { label:'Journal & Ledger',  icon:List,           to:'/journal',                desc:'All vouchers and entries' },
+      { label:'Chart of Accounts', icon:FileSpreadsheet,to:'/accounts',               desc:'Account master list' },
+      { label:'Trial Balance',     icon:BarChart2,      to:'/trial-balance',          desc:'Dr/Cr summary' },
     ]
   },
   {
     key:'banking', label:'Banking', icon:CreditCard,
     children:[
-      { label:'Bank Accounts',   icon:Briefcase,      to:'/bank', desc:'Manage bank accounts' },
-      { label:'Reconciliation',  icon:RefreshCw,      to:'/bank', desc:'Match transactions' },
-      { label:'Import Statement',icon:ArrowLeftRight, to:'/bank', desc:'Upload CSV/Excel/PDF' },
+      { label:'Bank Accounts',    icon:Briefcase,      to:'/bank?tab=accounts',  desc:'Manage bank accounts' },
+      { label:'Reconciliation',   icon:RefreshCw,      to:'/bank?tab=reconcile', desc:'Match transactions' },
+      { label:'Import Statement', icon:ArrowLeftRight, to:'/bank?tab=import',    desc:'Upload CSV/Excel/PDF' },
     ]
   },
   {
     key:'compliance', label:'GST & Tax', icon:Receipt,
     children:[
-      { label:'GST Reports',  icon:FileText, to:'/gst', desc:'GSTR-1, GSTR-3B' },
-      { label:'GSTR-1 Filing',icon:FileText, to:'/gst', desc:'Outward supplies' },
-      { label:'TDS / TCS',    icon:Receipt,  to:'/gst', desc:'Tax deducted at source' },
+      { label:'GST Reports',   icon:FileText, to:'/gst',         desc:'GSTR-1, GSTR-3B' },
+      { label:'GSTR-1 Filing', icon:FileText, to:'/gst',         desc:'Outward supplies' },
+      { label:'TDS / TCS',     icon:Receipt,  to:'/gst',         desc:'Tax deducted at source' },
     ]
   },
   {
     key:'payroll', label:'Payroll', icon:Users,
     children:[
-      { label:'Salary Processing',icon:Users,       to:'/payroll', desc:'Run monthly payroll' },
-      { label:'Employee Master',  icon:UserCircle,  to:'/payroll', desc:'Manage employees' },
-      { label:'PF / ESIC / TDS',  icon:FileText,    to:'/payroll', desc:'Statutory compliance' },
+      { label:'Salary Processing', icon:Users,       to:'/payroll?tab=salary',   desc:'Run monthly payroll' },
+      { label:'Employee Master',   icon:UserCircle,  to:'/payroll?tab=employees',desc:'Manage employees' },
+      { label:'PF / ESIC / TDS',   icon:FileText,    to:'/payroll?tab=statutory',desc:'Statutory compliance' },
     ]
   },
   {
     key:'reports', label:'Reports', icon:PieChart,
     children:[
-      { label:'P&L Statement', icon:TrendingUp,     to:'/reports', desc:'Profit & loss' },
-      { label:'Balance Sheet', icon:BarChart2,      to:'/reports', desc:'Assets & liabilities' },
-      { label:'Cash Flow',     icon:ArrowLeftRight, to:'/reports', desc:'Inflow / outflow' },
+      { label:'P&L Statement', icon:TrendingUp,     to:'/reports?tab=pl',            desc:'Profit & loss' },
+      { label:'Balance Sheet', icon:BarChart2,      to:'/reports?tab=balance-sheet', desc:'Assets & liabilities' },
+      { label:'Cash Flow',     icon:ArrowLeftRight, to:'/reports?tab=cashflow',       desc:'Inflow / outflow' },
     ]
   },
 ]
@@ -79,12 +79,20 @@ export default function Topbar() {
   useOutsideClick(userRef, () => setUserDrop(false))
 
   const isActive = (item) => {
-    if (item.to) return item.exact ? location.pathname === item.to : location.pathname.startsWith(item.to)
-    if (item.children) return item.children.some(c => location.pathname === c.to)
+    if (item.to) {
+      const path = item.to.split('?')[0]
+      return item.exact ? location.pathname === path : location.pathname.startsWith(path)
+    }
+    if (item.children) return item.children.some(c => location.pathname === c.to.split('?')[0])
     return false
   }
 
-  const goTo = (to) => { navigate(to); setOpen(null); setCoDrop(false) }
+  const goTo = (to) => {
+    const [path, query] = to.split('?')
+    navigate(query ? `${path}?${query}` : path)
+    setOpen(null)
+    setCoDrop(false)
+  }
 
   return (
     <header className="topbar">
