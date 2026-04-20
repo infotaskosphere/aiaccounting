@@ -2,14 +2,17 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 import { AuthProvider, useAuth } from './context/AuthContext'
-import Topbar    from './components/Topbar'
-import Login     from './pages/Login'
-import Dashboard from './pages/Dashboard'
-import Journal   from './pages/Journal'
-import Bank      from './pages/Bank'
-import GST       from './pages/GST'
-import Payroll   from './pages/Payroll'
-import Companies from './pages/Companies'
+import Topbar       from './components/Topbar'
+import Login        from './pages/Login'
+import Dashboard    from './pages/Dashboard'
+import Journal      from './pages/Journal'
+import Accounts     from './pages/Accounts'
+import TrialBalance from './pages/TrialBalance'
+import Bank         from './pages/Bank'
+import GST          from './pages/GST'
+import Payroll      from './pages/Payroll'
+import Reports      from './pages/Reports'
+import Companies    from './pages/Companies'
 
 function AppShell() {
   const { user, loading } = useAuth()
@@ -33,13 +36,16 @@ function AppShell() {
       <Topbar />
       <div className="app-body">
         <Routes>
-          <Route path="/"          element={<Dashboard />} />
-          <Route path="/journal"   element={<Journal />} />
-          <Route path="/bank"      element={<Bank />} />
-          <Route path="/gst"       element={<GST />} />
-          <Route path="/payroll"   element={<Payroll />} />
-          <Route path="/companies" element={<Companies />} />
-          <Route path="*"          element={<Navigate to="/" replace />} />
+          <Route path="/"               element={<Dashboard />} />
+          <Route path="/journal"        element={<Journal />} />
+          <Route path="/accounts"       element={<Accounts />} />
+          <Route path="/trial-balance"  element={<TrialBalance />} />
+          <Route path="/bank"           element={<Bank />} />
+          <Route path="/gst"            element={<GST />} />
+          <Route path="/payroll"        element={<Payroll />} />
+          <Route path="/reports"        element={<Reports />} />
+          <Route path="/companies"      element={<Companies />} />
+          <Route path="*"               element={<Navigate to="/" replace />} />
         </Routes>
       </div>
     </div>
