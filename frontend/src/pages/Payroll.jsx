@@ -2,18 +2,20 @@
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Users, Download, Play, CheckCircle, TrendingUp, UserCircle, FileText } from 'lucide-react'
-import { mockPayroll } from '../api/mockData'
+import { getCompanyData } from '../api/mockData'
+import { useAuth } from '../context/AuthContext'
 import { fmt, fmtCr } from '../utils/format'
 
 const PERIODS = ['March 2024', 'February 2024', 'January 2024']
 
 export default function Payroll() {
+  const { activeCompany } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
   const tab = searchParams.get('tab') || 'salary'
   const [period, setPeriod] = useState('March 2024')
   const [ran, setRan]       = useState(false)
   const [loading, setLoading] = useState(false)
-  const payroll = mockPayroll
+  const payroll = getCompanyData(activeCompany?.id).payroll
 
   const handleRun = () => {
     setLoading(true)
@@ -79,8 +81,9 @@ export default function Payroll() {
 
       )}
 
-      {/* KPI Cards */}
-      {tab === 'salary' && <div className="kpi-grid" style={{ marginBottom: 24 }}>
+      {/* Salary Processing Tab */}
+      {tab === 'salary' && (<>
+      <div className="kpi-grid" style={{ marginBottom: 24 }}>
         {summary.map(s => (
           <div key={s.label} className={`kpi-card ${s.color}`}>
             <div className="kpi-label">{s.label}</div>
@@ -247,7 +250,7 @@ export default function Payroll() {
           </div>
         </div>
       </div>
-      }
+      </>)}
 
       {/* Employee Master Tab */}
       {tab === 'employees' && (
