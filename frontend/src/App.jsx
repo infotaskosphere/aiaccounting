@@ -1,5 +1,5 @@
 // src/App.jsx — updated with Opening Balances route
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { ModeProvider, useMode } from './components/LaymanModeToggle'
@@ -68,10 +68,10 @@ export default function App() {
   return (
     <AuthProvider>
       <ModeProvider>
-        <BrowserRouter>
+        <HashRouter>
           <Toaster position="top-right" toastOptions={{ duration:3000, style:{ background:'#1F2937', color:'#F9FAFB', fontSize:'13px', borderRadius:'6px', padding:'10px 14px', fontFamily:"'IBM Plex Sans', sans-serif" }}} />
           <AppShell />
-        </BrowserRouter>
+        </HashRouter>
       </ModeProvider>
     </AuthProvider>
   )
