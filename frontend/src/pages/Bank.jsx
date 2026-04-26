@@ -11,10 +11,12 @@ import {
   Upload, CheckCircle, X, Zap, RefreshCw, FileText,
   CreditCard, Brain, Download, Search,
   Filter, Edit3, Trash2, ArrowUpCircle, ArrowDownCircle, AlertCircle,
-  Plus, Eye, Users, Hash, CreditCard as CardIcon, ChevronRight
+  Plus, Eye, Users, Hash, CreditCard as CardIcon, ChevronRight,
+  Pencil, Settings, BookOpen
 } from 'lucide-react'
 import toast from 'react-hot-toast'
-import { loadCompanyData, addBankTransactions, updateBankTransaction, clearBankTransactions } from '../api/companyStore'
+import { loadCompanyData, addBankTransactions, updateBankTransaction, clearBankTransactions,
+  loadCustomHeads, addCustomHead, renameCustomHead, deleteCustomHead } from '../api/companyStore'
 import { useAuth } from '../context/AuthContext'
 import { fmt, fmtDate } from '../utils/format'
 
@@ -495,10 +497,15 @@ export default function Bank() {
   const [parseProgress,setParseProgress]= useState(0)
   const [editingId,    setEditingId]    = useState(null)
   const [editAccount,  setEditAccount]  = useState('')
-  const [customAccount,setCustomAccount]= useState('')   // for "add own head"
+  const [customAccount,setCustomAccount]= useState('')
   const [showCustom,   setShowCustom]   = useState(false)
-  const [selectedTxn,  setSelectedTxn]  = useState(null) // detail modal
-  const [similarApplied,setSimilarApplied]=useState(null) // {count, account}
+  const [selectedTxn,  setSelectedTxn]  = useState(null)
+  const [similarApplied,setSimilarApplied]=useState(null)
+  // ── Custom heads
+  const [customHeads,  setCustomHeads]  = useState([])
+  const [showManageHeads, setShowManageHeads] = useState(false)
+  const [editingHead,  setEditingHead]  = useState(null)   // { original, value }
+  const [newHeadInput, setNewHeadInput] = useState('')
   const [sortBy,       setSortBy]       = useState('date_desc')
   const [showFilters,  setShowFilters]  = useState(false)
   const [dateFrom,     setDateFrom]     = useState('')
@@ -510,9 +517,41 @@ export default function Bank() {
   const loadTxns = () => {
     const data = loadCompanyData(activeCompany?.id)
     setTransactions(data.bankTransactions || [])
+    setCustomHeads(loadCustomHeads(activeCompany?.id))
   }
 
   useEffect(() => { loadTxns() }, [activeCompany?.id])
+
+  // All options = built-ins + company custom heads
+  const allAccountOptions = [...ACCOUNT_OPTIONS, ...customHeads]
+
+  const handleSaveCustomHead = (name) => {
+    const trimmed = (name || '').trim()
+    if (!trimmed) return toast.error('Head name cannot be empty')
+    if (allAccountOptions.some(h => h.toLowerCase() === trimmed.toLowerCase()))
+      return toast.error('This account head already exists')
+    addCustomHead(activeCompany?.id, trimmed)
+    setCustomHeads(loadCustomHeads(activeCompany?.id))
+    toast.success(`"${trimmed}" added to account heads ✓`)
+    return trimmed
+  }
+
+  const handleRenameHead = (original, newName) => {
+    const trimmed = (newName || '').trim()
+    if (!trimmed) return toast.error('Name cannot be empty')
+    renameCustomHead(activeCompany?.id, original, trimmed)
+    setCustomHeads(loadCustomHeads(activeCompany?.id))
+    loadTxns()
+    setEditingHead(null)
+    toast.success(`Renamed to "${trimmed}" ✓`)
+  }
+
+  const handleDeleteHead = (head) => {
+    if (!window.confirm(`Delete account head "${head}"? Transactions tagged with it won't be changed.`)) return
+    deleteCustomHead(activeCompany?.id, head)
+    setCustomHeads(loadCustomHeads(activeCompany?.id))
+    toast.success(`"${head}" removed`)
+  }
 
   const onDrop = useCallback(files => {
     const file = files[0]
@@ -608,6 +647,11 @@ export default function Bank() {
   const acceptMatchWithAccount = (id, account) => {
     const resolvedAccount = (account === CUSTOM_SENTINEL || !account) ? customAccount : account
     if (!resolvedAccount.trim()) return toast.error('Please enter an account name')
+    // Persist custom head if it's not in existing options
+    if (!allAccountOptions.includes(resolvedAccount.trim())) {
+      addCustomHead(activeCompany?.id, resolvedAccount.trim())
+      setCustomHeads(loadCustomHeads(activeCompany?.id))
+    }
     const txn = transactions.find(t => t.id === id)
     updateBankTransaction(activeCompany?.id, id, { status:'matched', ai_suggested_account: resolvedAccount })
     // auto-apply to similar
@@ -634,8 +678,8 @@ export default function Bank() {
     setShowCustom(false)
     setCustomAccount('')
     const suggested = txn.ai_suggested_account || ACCOUNT_OPTIONS[0]
-    setEditAccount(ACCOUNT_OPTIONS.includes(suggested) ? suggested : CUSTOM_SENTINEL)
-    if (!ACCOUNT_OPTIONS.includes(suggested)) { setShowCustom(true); setCustomAccount(suggested) }
+    setEditAccount(allAccountOptions.includes(suggested) ? suggested : CUSTOM_SENTINEL)
+    if (!allAccountOptions.includes(suggested)) { setShowCustom(true); setCustomAccount(suggested) }
   }
 
   const handleSelectChange = (val) => {
@@ -706,6 +750,9 @@ export default function Bank() {
               <button className="btn btn-secondary" onClick={handleClearAll} style={{ color:'var(--danger)' }}><Trash2 size={15}/> Clear All</button>
             </>
           )}
+          <button className="btn btn-secondary" onClick={() => setShowManageHeads(true)} style={{ display:'flex', alignItems:'center', gap:6 }}>
+            <BookOpen size={15}/> Account Heads {customHeads.length > 0 && <span style={{ background:'var(--primary)', color:'white', borderRadius:999, fontSize:'0.65rem', padding:'1px 6px' }}>{customHeads.length}</span>}
+          </button>
           <button className="btn btn-primary" onClick={handleAutoReconcile} disabled={loading || counts.all === 0}>
             {loading ? <><Spinner color="white"/> Processing…</> : <><Zap size={15}/> AI Auto-Reconcile</>}
           </button>
@@ -956,7 +1003,9 @@ export default function Bank() {
                           <select value={editAccount} onChange={e => handleSelectChange(e.target.value)}
                             style={{ flex:1, height:30, border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:'0.8rem', background:'var(--bg)', color:'var(--text)', padding:'0 6px' }}>
                             {ACCOUNT_OPTIONS.map(a => <option key={a} value={a}>{a}</option>)}
-                            <option value={CUSTOM_SENTINEL}>➕ Add Custom Head…</option>
+                            {customHeads.length > 0 && <option disabled>── Custom Heads ──</option>}
+                            {customHeads.map(a => <option key={a} value={a}>⭐ {a}</option>)}
+                            <option value={CUSTOM_SENTINEL}>➕ Add New Custom Head…</option>
                           </select>
                           {!showCustom && (
                             <>
@@ -1031,6 +1080,103 @@ export default function Bank() {
         </div>
       </div>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+
+      {/* ── MANAGE ACCOUNT HEADS MODAL ───────────────────────────── */}
+      {showManageHeads && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.45)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}
+          onClick={() => { setShowManageHeads(false); setEditingHead(null); setNewHeadInput('') }}>
+          <div style={{ background:'var(--surface)', borderRadius:16, width:'100%', maxWidth:540, boxShadow:'0 24px 80px rgba(0,0,0,0.22)', overflow:'hidden', maxHeight:'85vh', display:'flex', flexDirection:'column' }}
+            onClick={e => e.stopPropagation()}>
+
+            {/* Header */}
+            <div style={{ padding:'18px 22px', borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'space-between', background:'linear-gradient(135deg,#EEF2FF,#F5F3FF)' }}>
+              <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                <BookOpen size={20} color="var(--primary)" />
+                <div>
+                  <div style={{ fontWeight:700, fontSize:'1rem' }}>Account Heads</div>
+                  <div style={{ fontSize:'0.72rem', color:'var(--text-3)' }}>Manage built-in & custom account categories</div>
+                </div>
+              </div>
+              <button onClick={() => { setShowManageHeads(false); setEditingHead(null); setNewHeadInput('') }}
+                style={{ background:'none', border:'none', cursor:'pointer', color:'var(--text-3)' }}><X size={18}/></button>
+            </div>
+
+            {/* Add new head */}
+            <div style={{ padding:'14px 22px', borderBottom:'1px solid var(--border)', background:'var(--surface-2)' }}>
+              <div style={{ fontSize:'0.75rem', fontWeight:700, color:'var(--text-3)', marginBottom:8, textTransform:'uppercase', letterSpacing:'0.05em' }}>Add New Custom Head</div>
+              <div style={{ display:'flex', gap:8 }}>
+                <input value={newHeadInput} onChange={e => setNewHeadInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') { const r = handleSaveCustomHead(newHeadInput); if (r) setNewHeadInput('') } }}
+                  placeholder="e.g. Trademark Fees, Director Remuneration…"
+                  style={{ flex:1, height:34, border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:'0.83rem', padding:'0 10px', background:'var(--bg)', color:'var(--text)' }} />
+                <button className="btn btn-primary btn-sm" style={{ gap:5, display:'flex', alignItems:'center' }}
+                  onClick={() => { const r = handleSaveCustomHead(newHeadInput); if (r) setNewHeadInput('') }}>
+                  <Plus size={13}/> Add
+                </button>
+              </div>
+            </div>
+
+            {/* Lists */}
+            <div style={{ flex:1, overflowY:'auto' }}>
+              {/* Custom heads */}
+              {customHeads.length > 0 && (
+                <div style={{ padding:'14px 22px' }}>
+                  <div style={{ fontSize:'0.72rem', fontWeight:700, color:'var(--primary)', marginBottom:10, textTransform:'uppercase', letterSpacing:'0.05em', display:'flex', alignItems:'center', gap:6 }}>
+                    ⭐ Custom Heads <span style={{ background:'var(--primary)', color:'white', borderRadius:999, fontSize:'0.65rem', padding:'1px 7px' }}>{customHeads.length}</span>
+                  </div>
+                  <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                    {customHeads.map(head => (
+                      <div key={head} style={{ display:'flex', alignItems:'center', gap:8, padding:'9px 12px', background:'#EEF2FF', borderRadius:10, border:'1px solid #C7D2FE' }}>
+                        {editingHead?.original === head ? (
+                          <>
+                            <input autoFocus value={editingHead.value}
+                              onChange={e => setEditingHead(h => ({ ...h, value: e.target.value }))}
+                              onKeyDown={e => { if (e.key === 'Enter') handleRenameHead(head, editingHead.value); if (e.key === 'Escape') setEditingHead(null) }}
+                              style={{ flex:1, height:28, border:'1px solid var(--primary)', borderRadius:6, fontSize:'0.83rem', padding:'0 8px', background:'white', color:'var(--text)' }} />
+                            <button className="btn btn-sm" style={{ background:'var(--success)', color:'white', padding:'3px 10px' }}
+                              onClick={() => handleRenameHead(head, editingHead.value)}><CheckCircle size={11}/> Save</button>
+                            <button className="btn btn-ghost btn-sm" style={{ padding:'3px 8px' }} onClick={() => setEditingHead(null)}>✕</button>
+                          </>
+                        ) : (
+                          <>
+                            <span style={{ flex:1, fontSize:'0.85rem', fontWeight:600, color:'var(--primary)' }}>{head}</span>
+                            <button title="Rename" className="btn btn-ghost btn-sm" style={{ padding:'3px 7px' }}
+                              onClick={() => setEditingHead({ original: head, value: head })}>
+                              <Pencil size={11}/>
+                            </button>
+                            <button title="Delete" className="btn btn-ghost btn-sm" style={{ padding:'3px 7px', color:'var(--danger)' }}
+                              onClick={() => handleDeleteHead(head)}>
+                              <Trash2 size={11}/>
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Built-in heads (read-only) */}
+              <div style={{ padding: customHeads.length > 0 ? '0 22px 14px' : '14px 22px' }}>
+                <div style={{ fontSize:'0.72rem', fontWeight:700, color:'var(--text-3)', marginBottom:10, textTransform:'uppercase', letterSpacing:'0.05em' }}>
+                  Built-in Heads (read-only)
+                </div>
+                <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
+                  {ACCOUNT_OPTIONS.map(opt => (
+                    <span key={opt} style={{ fontSize:'0.75rem', padding:'4px 10px', background:'var(--surface-2)', border:'1px solid var(--border)', borderRadius:20, color:'var(--text-2)' }}>
+                      {opt}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ padding:'12px 22px', borderTop:'1px solid var(--border)', display:'flex', justifyContent:'flex-end' }}>
+              <button className="btn btn-secondary btn-sm" onClick={() => { setShowManageHeads(false); setEditingHead(null); setNewHeadInput('') }}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── TRANSACTION DETAIL MODAL ──────────────────────────────── */}
       {selectedTxn && (
