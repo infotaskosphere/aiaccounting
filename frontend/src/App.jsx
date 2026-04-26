@@ -19,6 +19,7 @@ import Upload          from './pages/Upload'
 import Reconciliation  from './pages/Reconciliation'
 import SimpleMode      from './pages/SimpleMode'
 import OpeningBalances from './pages/OpeningBalances'
+import Settings        from './pages/Settings'
 
 function AppShell() {
   const { user, loading } = useAuth()
@@ -56,6 +57,7 @@ function AppShell() {
           <Route path="/reports"           element={<Reports />} />
           <Route path="/companies"         element={<Companies />} />
           <Route path="/opening-balances"  element={<OpeningBalances />} />
+          <Route path="/settings"          element={<Settings />} />
           <Route path="*"                  element={<Navigate to="/" replace />} />
         </Routes>
       </div>
