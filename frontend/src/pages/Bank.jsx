@@ -720,6 +720,13 @@ export default function Bank() {
   const ignoreTransaction   = (id) => { updateBankTransaction(activeCompany?.id, id, { status:'ignored' });   loadTxns(); toast('Transaction ignored', { icon:'🔕' }) }
   const unignoreTransaction = (id) => { updateBankTransaction(activeCompany?.id, id, { status:'unmatched' }); loadTxns() }
   const unmatchTransaction  = (id) => { updateBankTransaction(activeCompany?.id, id, { status:'unmatched' }); loadTxns() }
+
+  const flipTransactionSign = (txn) => {
+    const newType = txn.txn_type === 'credit' ? 'debit' : 'credit'
+    updateBankTransaction(activeCompany?.id, txn.id, { txn_type: newType, status: 'unmatched' })
+    loadTxns()
+    toast.success(`Flipped to ${newType === 'credit' ? '+ Credit (Income)' : '− Debit (Expense)'}`, { icon: '🔄' })
+  }
   const handleClearAll      = () => { if (!window.confirm('Clear all imported transactions?')) return; clearBankTransactions(activeCompany?.id); loadTxns(); toast.success('All transactions cleared') }
 
   const openTxnDetail  = (txn) => setSelectedTxn(txn)
@@ -1442,8 +1449,23 @@ export default function Bank() {
                     </div>
                   </div>
                   <div style={{ textAlign:'right', marginLeft:12 }}>
-                    <div style={{ fontFamily:'var(--font-mono)', fontWeight:700, fontSize:'0.9rem', color: txn.txn_type==='credit' ? 'var(--success)' : 'var(--danger)' }}>
+                    <div style={{ fontFamily:'var(--font-mono)', fontWeight:700, fontSize:'0.9rem', color: txn.txn_type==='credit' ? 'var(--success)' : 'var(--danger)', display:'flex', alignItems:'center', gap:5, justifyContent:'flex-end' }}>
                       {txn.txn_type === 'credit' ? '+' : '−'}₹{fmt(txn.amount)}
+                      <button
+                        title="Flip sign (fix parsing error)"
+                        onClick={e => { e.stopPropagation(); flipTransactionSign(txn) }}
+                        style={{
+                          width:18, height:18, borderRadius:'50%', border:'1px solid currentColor',
+                          background:'transparent', cursor:'pointer', display:'flex', alignItems:'center',
+                          justifyContent:'center', opacity:0.45, padding:0, flexShrink:0,
+                          color: txn.txn_type==='credit' ? 'var(--success)' : 'var(--danger)',
+                          transition:'opacity .15s'
+                        }}
+                        onMouseEnter={e => e.currentTarget.style.opacity='1'}
+                        onMouseLeave={e => e.currentTarget.style.opacity='0.45'}
+                      >
+                        <RefreshCw size={9}/>
+                      </button>
                     </div>
                     <span className={`badge ${statusBadge[txn.status]||'badge-gray'}`} style={{ marginTop:4 }}>{(txn.status||'').replace('_',' ')}</span>
                   </div>
@@ -1653,8 +1675,23 @@ export default function Bank() {
 
             {/* Amount hero */}
             <div style={{ padding:'22px 22px 16px', textAlign:'center', borderBottom:'1px solid var(--border)' }}>
-              <div style={{ fontSize:'2rem', fontWeight:800, fontFamily:'var(--font-mono)', color: selectedTxn.txn_type==='credit' ? 'var(--success)' : 'var(--danger)' }}>
+              <div style={{ fontSize:'2rem', fontWeight:800, fontFamily:'var(--font-mono)', color: selectedTxn.txn_type==='credit' ? 'var(--success)' : 'var(--danger)', display:'flex', alignItems:'center', justifyContent:'center', gap:10 }}>
                 {selectedTxn.txn_type === 'credit' ? '+' : '−'}₹{fmt(selectedTxn.amount)}
+                <button
+                  title="Flip sign — fix debit/credit parsing error"
+                  onClick={() => { flipTransactionSign(selectedTxn); closeDetail() }}
+                  style={{
+                    display:'flex', alignItems:'center', gap:5, fontSize:'0.7rem', fontWeight:600,
+                    padding:'4px 10px', borderRadius:20, border:'1.5px solid currentColor',
+                    background:'transparent', cursor:'pointer',
+                    color: selectedTxn.txn_type==='credit' ? 'var(--success)' : 'var(--danger)',
+                    opacity:0.65, transition:'opacity .15s'
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.opacity='1'}
+                  onMouseLeave={e => e.currentTarget.style.opacity='0.65'}
+                >
+                  <RefreshCw size={11}/> Flip Sign
+                </button>
               </div>
               <span className={`badge ${statusBadge[selectedTxn.status]||'badge-gray'}`} style={{ marginTop:6, fontSize:'0.78rem', padding:'4px 12px' }}>
                 {(selectedTxn.status||'').replace('_',' ')}
