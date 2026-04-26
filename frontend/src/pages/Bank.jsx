@@ -944,23 +944,84 @@ export default function Bank() {
   const confirmPostToJournal = async () => {
     setXLSImporting(true)
     let posted = 0
+
+    // ── Load existing sales/purchase vouchers to detect prior invoices ──
+    const existingVouchers = loadCompanyData(activeCompany?.id)?.vouchers || []
+
+    // Income account heads that indicate a sales receipt (not a debtor settlement)
+    const INCOME_ACCOUNTS = new Set([
+      'Sales Revenue','Miscellaneous Income','Interest Income','Other Income',
+      'Commission Income','Rental Income','Service Revenue','Consulting Revenue',
+    ])
+
     for (let i = 0; i < postingTxns.length; i++) {
       const t = postingTxns[i]
       const isCredit = t.txn_type === 'credit'
+      const matchedAccount = t.ai_suggested_account || (isCredit ? 'Miscellaneous Income' : 'Miscellaneous Expense')
+
+      let debit_account, credit_account, voucher_type
+
+      if (isCredit) {
+        // ── Money IN (bank credit) ─────────────────────────────────────
+        // Check: does a sales invoice already exist for approximately this
+        // amount on or near this date? If yes → this is a debtor settlement.
+        const hasPriorInvoice = existingVouchers.some(v =>
+          v.voucher_type === 'sales' &&
+          Math.abs(Number(v.amount) - t.amount) < 1 &&
+          Math.abs(new Date(v.date) - new Date(t.txn_date)) < 7 * 86400000 // within 7 days
+        )
+
+        if (hasPriorInvoice || !INCOME_ACCOUNTS.has(matchedAccount)) {
+          // Settlement of a prior sales invoice:
+          // Dr Bank Account → Cr Accounts Receivable  (closes the debtor, no new income)
+          voucher_type   = 'receipt'
+          debit_account  = 'Bank Account'
+          credit_account = 'Accounts Receivable'
+        } else {
+          // Direct income receipt — no prior invoice posted:
+          // Dr Bank Account → Cr [Income Account]
+          voucher_type   = 'receipt'
+          debit_account  = 'Bank Account'
+          credit_account = matchedAccount  // e.g. 'Sales Revenue', 'Miscellaneous Income'
+        }
+      } else {
+        // ── Money OUT (bank debit) ─────────────────────────────────────
+        // Check: does a purchase invoice already exist for this amount?
+        const hasPriorPurchase = existingVouchers.some(v =>
+          v.voucher_type === 'purchase' &&
+          Math.abs(Number(v.amount) - t.amount) < 1 &&
+          Math.abs(new Date(v.date) - new Date(t.txn_date)) < 7 * 86400000
+        )
+
+        if (hasPriorPurchase) {
+          // Settlement of a prior purchase invoice:
+          // Dr Accounts Payable → Cr Bank Account
+          voucher_type   = 'payment'
+          debit_account  = 'Accounts Payable'
+          credit_account = 'Bank Account'
+        } else {
+          // Direct expense payment — no prior invoice:
+          // Dr [Expense Account] → Cr Bank Account
+          voucher_type   = 'payment'
+          debit_account  = matchedAccount  // e.g. 'Salaries & Wages', 'Bank Charges'
+          credit_account = 'Bank Account'
+        }
+      }
+
       addVoucher(activeCompany?.id, {
-        voucher_type: isCredit ? 'receipt' : 'payment',
-        date:         t.txn_date,
-        reference:    t.reference || '',
-        party:        '',
-        narration:    t.narration.substring(0, 200),
-        amount:       t.amount,
-        cgst:         0, sgst: 0, igst: 0,
-        source:       'bank_import',
-        debit_account:  isCredit ? 'Bank Account' : (t.ai_suggested_account || 'Miscellaneous Expense'),
-        credit_account: isCredit ? (t.ai_suggested_account || 'Miscellaneous Income') : 'Bank Account',
-        bank_txn_id:  t.id,
+        voucher_type,
+        date:          t.txn_date,
+        reference:     t.reference || '',
+        party:         '',
+        narration:     t.narration.substring(0, 200),
+        amount:        t.amount,
+        cgst: 0, sgst: 0, igst: 0,
+        source:        'bank_import',
+        debit_account,
+        credit_account,
+        bank_txn_id:   t.id,
       })
-      // Mark as journal_posted
+
       updateBankTransaction(activeCompany?.id, t.id, { journal_posted: true })
       posted++
       setPostProgress(Math.round((i + 1) / postingTxns.length * 100))
@@ -969,7 +1030,7 @@ export default function Bank() {
     loadTxns()
     setPostDone(true)
     setXLSImporting(false)
-    toast.success(`${posted} journal entries created ✓`)
+    toast.success(`${posted} journal entries created ✓ — no double counting`)
   }
 
   // ── NEW: XLS Bulk Import (Sales/Purchase) ─────────────────────────
@@ -1907,7 +1968,7 @@ export default function Bank() {
                 <div style={{ fontWeight:700, fontSize:'1.2rem', marginBottom:8 }}>Journal Entries Created!</div>
                 <div style={{ fontSize:'0.85rem', color:'var(--text-3)', marginBottom:24 }}>
                   {postingTxns.length} vouchers posted to Journal. Ledger updated automatically.<br/>
-                  Debit/Credit entries created with AI-suggested account heads.
+                  Receipts against existing sales invoices close <strong>Accounts Receivable</strong> — no double-counting.
                 </div>
                 <button className="btn btn-primary" onClick={() => { setShowPostJournal(false); setPostDone(false) }}>Close</button>
               </div>
@@ -1922,17 +1983,61 @@ export default function Bank() {
 
                 {/* AI ledger preview */}
                 <div style={{ flex:1, overflowY:'auto', maxHeight:340 }}>
+                  {/* Info banner explaining the logic */}
+                  <div style={{ padding:'8px 22px', background:'#EFF6FF', borderBottom:'1px solid #BFDBFE', fontSize:'0.74rem', color:'#1D4ED8', display:'flex', gap:8, alignItems:'flex-start' }}>
+                    <span style={{ flexShrink:0 }}>ℹ️</span>
+                    <span>
+                      If a <strong>Sales Invoice</strong> was already posted for a similar amount, the bank receipt will close
+                      <strong> Accounts Receivable</strong> instead of posting income again — preventing double-counting.
+                    </span>
+                  </div>
                   <div style={{ padding:'10px 22px 6px', fontSize:'0.72rem', fontWeight:700, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.05em', borderBottom:'1px solid var(--border)', display:'grid', gridTemplateColumns:'80px 1fr 1fr 90px', gap:8 }}>
                     <span>Date</span><span>Debit Account</span><span>Credit Account</span><span>Amount</span>
                   </div>
-                  {postingTxns.slice(0, 20).map(t => (
-                    <div key={t.id} style={{ padding:'8px 22px', borderBottom:'1px solid var(--border)', display:'grid', gridTemplateColumns:'80px 1fr 1fr 90px', gap:8, fontSize:'0.8rem', alignItems:'center' }}>
-                      <span style={{ color:'var(--text-3)' }}>{fmtDate(t.txn_date)}</span>
-                      <span style={{ fontWeight:600, color:'var(--danger)' }}>{t.txn_type==='credit' ? 'Bank Account' : (t.ai_suggested_account||'Misc. Expense')}</span>
-                      <span style={{ fontWeight:600, color:'var(--success)' }}>{t.txn_type==='credit' ? (t.ai_suggested_account||'Misc. Income') : 'Bank Account'}</span>
-                      <span style={{ fontFamily:'var(--font-mono)', fontWeight:700 }}>₹{fmt(t.amount)}</span>
-                    </div>
-                  ))}
+                  {(() => {
+                    const INCOME_ACCOUNTS = new Set(['Sales Revenue','Miscellaneous Income','Interest Income','Other Income','Commission Income','Rental Income','Service Revenue','Consulting Revenue'])
+                    const existingVouchers = loadCompanyData(activeCompany?.id)?.vouchers || []
+                    return postingTxns.slice(0, 20).map(t => {
+                      const isCredit = t.txn_type === 'credit'
+                      const matchedAccount = t.ai_suggested_account || (isCredit ? 'Miscellaneous Income' : 'Miscellaneous Expense')
+                      let drAcc, crAcc, isSettlement = false
+
+                      if (isCredit) {
+                        const hasPriorInvoice = existingVouchers.some(v =>
+                          v.voucher_type === 'sales' &&
+                          Math.abs(Number(v.amount) - t.amount) < 1 &&
+                          Math.abs(new Date(v.date) - new Date(t.txn_date)) < 7 * 86400000
+                        )
+                        if (hasPriorInvoice || !INCOME_ACCOUNTS.has(matchedAccount)) {
+                          drAcc = 'Bank Account'; crAcc = 'Accounts Receivable'; isSettlement = true
+                        } else {
+                          drAcc = 'Bank Account'; crAcc = matchedAccount
+                        }
+                      } else {
+                        const hasPriorPurchase = existingVouchers.some(v =>
+                          v.voucher_type === 'purchase' &&
+                          Math.abs(Number(v.amount) - t.amount) < 1 &&
+                          Math.abs(new Date(v.date) - new Date(t.txn_date)) < 7 * 86400000
+                        )
+                        if (hasPriorPurchase) {
+                          drAcc = 'Accounts Payable'; crAcc = 'Bank Account'; isSettlement = true
+                        } else {
+                          drAcc = matchedAccount; crAcc = 'Bank Account'
+                        }
+                      }
+                      return (
+                        <div key={t.id} style={{ padding:'8px 22px', borderBottom:'1px solid var(--border)', display:'grid', gridTemplateColumns:'80px 1fr 1fr 90px', gap:8, fontSize:'0.8rem', alignItems:'center', background: isSettlement ? '#F0FDF4' : 'transparent' }}>
+                          <span style={{ color:'var(--text-3)' }}>{fmtDate(t.txn_date)}</span>
+                          <span style={{ fontWeight:600, color:'var(--danger)' }}>
+                            {drAcc}
+                            {isSettlement && <span style={{ fontSize:'0.65rem', marginLeft:4, background:'#BBF7D0', color:'#166534', padding:'1px 5px', borderRadius:4 }}>settles invoice</span>}
+                          </span>
+                          <span style={{ fontWeight:600, color:'var(--success)' }}>{crAcc}</span>
+                          <span style={{ fontFamily:'var(--font-mono)', fontWeight:700 }}>₹{fmt(t.amount)}</span>
+                        </div>
+                      )
+                    })
+                  })()}
                   {postingTxns.length > 20 && (
                     <div style={{ padding:'10px 22px', fontSize:'0.78rem', color:'var(--text-3)', fontStyle:'italic' }}>…and {postingTxns.length - 20} more entries</div>
                   )}
