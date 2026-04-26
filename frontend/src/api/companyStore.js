@@ -4,7 +4,6 @@
 
 const STORE_KEY = (id) => `finix_data_${id}`
 
-// ── Empty skeleton for a brand-new company ────────────────────────────────
 function emptyCompanyData() {
   return {
     dashboard: {
@@ -15,8 +14,8 @@ function emptyCompanyData() {
     },
     vouchers: [],
     bankTransactions: [],
-    bankAccounts: [],             // ← registered bank accounts
-    customAccountHeads: [],      // ← persisted custom account heads
+    bankAccounts: [],
+    customAccountHeads: [],
     gst: {
       period: '',
       output: { taxable:0, cgst:0, sgst:0, igst:0, total:0 },
@@ -32,7 +31,6 @@ function emptyCompanyData() {
   }
 }
 
-// ── Load company data from localStorage ──────────────────────────────────
 export function loadCompanyData(companyId) {
   if (!companyId) return emptyCompanyData()
   try {
@@ -42,7 +40,6 @@ export function loadCompanyData(companyId) {
   return emptyCompanyData()
 }
 
-// ── Save company data to localStorage ────────────────────────────────────
 export function saveCompanyData(companyId, data) {
   if (!companyId) return
   try {
@@ -50,7 +47,6 @@ export function saveCompanyData(companyId, data) {
   } catch (_) {}
 }
 
-// ── Add a voucher and recalculate dashboard ───────────────────────────────
 export function addVoucher(companyId, voucher) {
   const data = loadCompanyData(companyId)
   const newVoucher = {
@@ -69,7 +65,26 @@ export function addVoucher(companyId, voucher) {
   return newVoucher
 }
 
-// ── Add bank transactions from imported statement ─────────────────────────
+// ── UPDATE a voucher ───────────────────────────────────────────────────────
+export function updateVoucher(companyId, voucherId, updates) {
+  const data = loadCompanyData(companyId)
+  data.vouchers = data.vouchers.map(v =>
+    v.id === voucherId ? { ...v, ...updates, updated_at: new Date().toISOString() } : v
+  )
+  data.dashboard.recentVouchers = data.vouchers.slice(0, 10)
+  recalcDashboard(data)
+  saveCompanyData(companyId, data)
+}
+
+// ── DELETE a voucher ───────────────────────────────────────────────────────
+export function deleteVoucher(companyId, voucherId) {
+  const data = loadCompanyData(companyId)
+  data.vouchers = data.vouchers.filter(v => v.id !== voucherId)
+  data.dashboard.recentVouchers = data.vouchers.slice(0, 10)
+  recalcDashboard(data)
+  saveCompanyData(companyId, data)
+}
+
 export function addBankTransactions(companyId, transactions) {
   const data = loadCompanyData(companyId)
   const existingIds = new Set(data.bankTransactions.map(t => t.id))
@@ -85,7 +100,6 @@ export function addBankTransactions(companyId, transactions) {
   return newTxns
 }
 
-// ── Update a bank transaction status ─────────────────────────────────────
 export function updateBankTransaction(companyId, txnId, updates) {
   const data = loadCompanyData(companyId)
   data.bankTransactions = data.bankTransactions.map(t =>
@@ -94,14 +108,12 @@ export function updateBankTransaction(companyId, txnId, updates) {
   saveCompanyData(companyId, data)
 }
 
-// ── Clear all bank transactions ───────────────────────────────────────────
 export function clearBankTransactions(companyId) {
   const data = loadCompanyData(companyId)
   data.bankTransactions = []
   saveCompanyData(companyId, data)
 }
 
-// ── Add multiple vouchers at once (bulk import) ───────────────────────────
 export function addVouchers(companyId, vouchers) {
   const data = loadCompanyData(companyId)
   const newVouchers = vouchers.map(v => ({
@@ -120,7 +132,6 @@ export function addVouchers(companyId, vouchers) {
   return newVouchers
 }
 
-// ── Compute full P&L and Balance Sheet from vouchers ─────────────────────
 export function computeFinancials(companyId) {
   const data = loadCompanyData(companyId)
   const vouchers = data.vouchers || []
@@ -132,7 +143,6 @@ export function computeFinancials(companyId) {
   const cgstIn    = vouchers.filter(v => ['purchase'].includes(v.voucher_type)).reduce((s,v) => s + (Number(v.cgst)||0), 0)
   const sgstIn    = vouchers.filter(v => ['purchase'].includes(v.voucher_type)).reduce((s,v) => s + (Number(v.sgst)||0), 0)
 
-  // Build trial balance from vouchers grouped by narration type
   const accountMap = {}
   const addEntry = (name, group, dr, cr) => {
     if (!accountMap[name]) accountMap[name] = { name, group, dr: 0, cr: 0 }
@@ -195,7 +205,6 @@ export function computeFinancials(companyId) {
   }
 }
 
-// ── Recalculate dashboard totals from voucher list ────────────────────────
 function recalcDashboard(data) {
   let income = 0, expenses = 0
   for (const v of data.vouchers) {
@@ -204,16 +213,8 @@ function recalcDashboard(data) {
     if (['purchase', 'payment'].includes(v.voucher_type)) expenses += amt
   }
   const net_profit = income - expenses
-  data.dashboard.balanceSheet = {
-    assets: income,
-    liabilities: expenses,
-    equity: net_profit,
-    income,
-    expenses,
-    net_profit,
-  }
+  data.dashboard.balanceSheet = { assets: income, liabilities: expenses, equity: net_profit, income, expenses, net_profit }
 
-  // Monthly cashflow from vouchers (last 6 months)
   const monthMap = {}
   for (const v of data.vouchers) {
     if (!v.date) continue
@@ -230,7 +231,6 @@ function recalcDashboard(data) {
     .map(({ _ts, ...rest }) => rest)
 }
 
-// ── Generate voucher number ───────────────────────────────────────────────
 function generateVoucherNo(vouchers, type) {
   const prefixMap = { sales:'SI', purchase:'PI', receipt:'RV', payment:'PV', journal:'JV', contra:'CV' }
   const prefix = prefixMap[type] || 'JV'
@@ -239,15 +239,10 @@ function generateVoucherNo(vouchers, type) {
   return `${prefix}-${year}-${String(count).padStart(4, '0')}`
 }
 
-// ── Clear all data for a company ──────────────────────────────────────────
 export function clearCompanyData(companyId) {
   if (!companyId) return
   localStorage.removeItem(STORE_KEY(companyId))
 }
-
-// ══════════════════════════════════════════════════════════════════════════
-// CUSTOM ACCOUNT HEADS  — company-specific saved heads
-// ══════════════════════════════════════════════════════════════════════════
 
 export function loadCustomHeads(companyId) {
   const data = loadCompanyData(companyId)
@@ -259,7 +254,6 @@ export function addCustomHead(companyId, head) {
   if (!trimmed) return
   const data = loadCompanyData(companyId)
   const heads = data.customAccountHeads || []
-  // No duplicates (case-insensitive)
   if (heads.some(h => h.toLowerCase() === trimmed.toLowerCase())) return
   data.customAccountHeads = [...heads, trimmed]
   saveCompanyData(companyId, data)
@@ -271,7 +265,6 @@ export function renameCustomHead(companyId, oldHead, newHead) {
   const data = loadCompanyData(companyId)
   const heads = data.customAccountHeads || []
   data.customAccountHeads = heads.map(h => h === oldHead ? trimmed : h)
-  // Also update any transactions already tagged with the old head
   data.bankTransactions = (data.bankTransactions || []).map(t =>
     t.ai_suggested_account === oldHead ? { ...t, ai_suggested_account: trimmed } : t
   )
