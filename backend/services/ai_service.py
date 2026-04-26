@@ -266,3 +266,113 @@ class AIService:
                 )
         except Exception:
             pass  # Non-critical — don't break the flow
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# v2 UPGRADE: standalone async functions used by main.py endpoints
+# These wrap the AIService class above for use with asyncpg connections
+# ═══════════════════════════════════════════════════════════════════════════════
+import json as _json
+import logging as _logging
+from ai.classifier import HybridClassifier as _HybridClassifier
+
+_log2 = _logging.getLogger(__name__ + ".v2")
+_hybrid_clf: _HybridClassifier | None = None
+
+
+def _get_hybrid() -> _HybridClassifier:
+    global _hybrid_clf
+    if _hybrid_clf is None:
+        _hybrid_clf = _HybridClassifier()
+    return _hybrid_clf
+
+
+async def classify_transaction(
+    db,
+    company_id: int,
+    narration: str,
+    amount: float,
+    txn_type: str = "debit",
+    bank_txn_id=None,
+) -> dict:
+    clf = _get_hybrid()
+    result = await clf.classify(narration, amount, txn_type)
+    row = await db.fetchrow(
+        """INSERT INTO ai_classifications
+               (company_id, bank_txn_id, narration, amount, txn_type,
+                suggested_account_code, confidence, method, raw_response)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+           RETURNING id""",
+        company_id, bank_txn_id, narration, amount, txn_type,
+        result["account_code"], result["confidence"],
+        result["method"], _json.dumps(result),
+    )
+    return {**result, "classification_id": row["id"]}
+
+
+async def record_correction(db, company_id, classification_id, correct_account_code, user_id) -> None:
+    row = await db.fetchrow(
+        "SELECT narration, amount, txn_type FROM ai_classifications WHERE id=$1", classification_id)
+    if not row:
+        return
+    await db.execute(
+        """INSERT INTO ai_training_data
+               (company_id, narration, amount, txn_type, correct_account_code, source, created_by)
+           VALUES ($1,$2,$3,$4,$5,'user_correction',$6)
+           ON CONFLICT (company_id, narration, correct_account_code) DO UPDATE SET updated_at=NOW()""",
+        company_id, row["narration"], row["amount"], row["txn_type"], correct_account_code, user_id,
+    )
+    await db.execute(
+        "UPDATE ai_classifications SET corrected_account_code=$1, corrected_by=$2, corrected_at=NOW() WHERE id=$3",
+        correct_account_code, user_id, classification_id,
+    )
+    await _get_hybrid().learn(row["narration"], correct_account_code, company_id)
+
+
+async def suggest_ledger(db, company_id, query, amount=None) -> list[dict]:
+    clf = _get_hybrid()
+    result = await clf.classify(query, abs(amount or 1000))
+    rows = await db.fetch(
+        "SELECT code,name,account_type FROM accounts WHERE company_id=$1 AND code ILIKE $2 AND is_active=true LIMIT 5",
+        company_id, f"{result['account_code']}%",
+    )
+    if rows:
+        return [{"account_code": r["code"], "account_name": r["name"],
+                 "account_type": r["account_type"],
+                 "confidence": result["confidence"], "method": result["method"]} for r in rows]
+    return [{"account_code": result["account_code"], "account_name": result.get("account_name",""),
+             "confidence": result["confidence"], "method": result["method"]}]
+
+
+async def get_learning_stats(db, company_id) -> dict:
+    total = await db.fetchval("SELECT COUNT(*) FROM ai_training_data WHERE company_id=$1", company_id)
+    corrections = await db.fetchval(
+        "SELECT COUNT(*) FROM ai_training_data WHERE company_id=$1 AND source='user_correction'", company_id)
+    auto = await db.fetchval("SELECT COUNT(*) FROM ai_classifications WHERE company_id=$1", company_id)
+    auto_correct = await db.fetchval(
+        "SELECT COUNT(*) FROM ai_classifications WHERE company_id=$1 AND corrected_account_code IS NOT NULL", company_id)
+    accuracy = round((1 - (auto_correct or 0) / max(auto or 1, 1)) * 100, 2)
+    return {"training_samples": total, "user_corrections": corrections,
+            "total_classifications": auto, "corrections_made": auto_correct,
+            "estimated_accuracy_pct": accuracy}
+
+
+async def detect_anomalies(db, company_id, days=30) -> list[dict]:
+    dupes = await db.fetch(
+        """SELECT narration, amount, COUNT(*) as cnt, array_agg(id ORDER BY txn_date) as ids
+           FROM bank_transactions WHERE company_id=$1 AND txn_date >= CURRENT_DATE - $2::int
+           GROUP BY narration, amount HAVING COUNT(*) > 1 ORDER BY cnt DESC LIMIT 20""",
+        company_id, days)
+    rounds = await db.fetch(
+        """SELECT id, txn_date, narration, amount FROM bank_transactions
+           WHERE company_id=$1 AND amount >= 100000 AND amount % 10000 = 0
+             AND txn_date >= CURRENT_DATE - $2::int ORDER BY amount DESC LIMIT 20""",
+        company_id, days)
+    result = []
+    for d in dupes:
+        result.append({"type":"duplicate","narration":d["narration"],"amount":float(d["amount"]),
+                        "occurrences":d["cnt"],"transaction_ids":list(d["ids"])})
+    for r in rounds:
+        result.append({"type":"large_round_figure","transaction_id":r["id"],
+                        "date":str(r["txn_date"]),"narration":r["narration"],"amount":float(r["amount"])})
+    return result
