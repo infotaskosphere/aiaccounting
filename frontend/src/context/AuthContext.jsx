@@ -1,4 +1,4 @@
-// src/context/AuthContext.jsx — with multi-user management support
+// src/context/AuthContext.jsx — with Sign Up support, no hardcoded demo accounts
 import { createContext, useContext, useState, useEffect } from 'react'
 
 const AuthContext = createContext(null)
@@ -17,20 +17,15 @@ const DEFAULT_COMPANIES = [
   { id:'co-2', name:'Beta Traders',        type:'Partnership Firm', gstin:'27AACBT5678D1ZY', fy:currentFY(), color:'#7C3AED', initials:'BT' },
 ]
 
-// All users in the system — admin can manage these
-const DEFAULT_USERS = [
-  { id:'u1', email:'admin@finix.in',   password:'admin123', name:'Admin User',   role:'admin',       status:'active', createdAt:'2024-01-01' },
-  { id:'u2', email:'ravi@finix.in',    password:'ravi123',  name:'Ravi Sharma',  role:'accountant',  status:'active', createdAt:'2024-02-01' },
-  { id:'u3', email:'priya@finix.in',   password:'priya123', name:'Priya Mehta',  role:'auditor',     status:'active', createdAt:'2024-03-01' },
-  { id:'u4', email:'demo@finix.in',    password:'demo123',  name:'Demo User',    role:'view_only',   status:'active', createdAt:'2024-01-15' },
-]
+// No hardcoded demo accounts — all users register via Sign Up
+const INITIAL_USERS = []
 
 export function AuthProvider({ children }) {
   const [user,          setUser]      = useState(null)
   const [companies,     setCompanies] = useState([])
   const [activeCompany, setActive]    = useState(null)
   const [loading,       setLoading]   = useState(true)
-  const [allUsers,      setAllUsers]  = useState(DEFAULT_USERS)
+  const [allUsers,      setAllUsers]  = useState(INITIAL_USERS)
 
   useEffect(() => {
     try {
@@ -50,22 +45,79 @@ export function AuthProvider({ children }) {
   }, [])
 
   const persist = (u, cos, activeId, users) => {
-    localStorage.setItem('finix_session', JSON.stringify({ user: u, companies: cos, activeId, allUsers: users || allUsers }))
+    localStorage.setItem('finix_session', JSON.stringify({
+      user: u,
+      companies: cos,
+      activeId,
+      allUsers: users !== undefined ? users : allUsers,
+    }))
   }
 
+  // ── Sign Up (self-registration) ──
+  const signup = ({ name, email, password, role }) => {
+    // Load latest users from storage to avoid stale state
+    let currentUsers = allUsers
+    try {
+      const saved = localStorage.getItem('finix_session')
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        if (parsed.allUsers) currentUsers = parsed.allUsers
+      }
+    } catch (_) {}
+
+    const exists = currentUsers.find(u => u.email.toLowerCase() === email.toLowerCase())
+    if (exists) return { error: 'An account with this email already exists' }
+
+    const newUser = {
+      id: `u-${Date.now()}`,
+      email,
+      password,
+      name,
+      role: role || 'accountant',
+      status: 'active',
+      createdAt: new Date().toISOString().slice(0, 10),
+    }
+    const updated = [...currentUsers, newUser]
+    setAllUsers(updated)
+
+    // Persist users without logging in
+    const saved = (() => { try { return JSON.parse(localStorage.getItem('finix_session') || '{}') } catch(_) { return {} } })()
+    localStorage.setItem('finix_session', JSON.stringify({ ...saved, allUsers: updated }))
+
+    return { success: true }
+  }
+
+  // ── Login ──
   const login = (email, password) => {
-    const found = allUsers.find(u => u.email.toLowerCase() === email.toLowerCase() && u.password === password && u.status === 'active')
+    // Read latest users from storage
+    let currentUsers = allUsers
+    try {
+      const saved = localStorage.getItem('finix_session')
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        if (parsed.allUsers) currentUsers = parsed.allUsers
+      }
+    } catch (_) {}
+
+    const found = currentUsers.find(
+      u => u.email.toLowerCase() === email.toLowerCase() &&
+           u.password === password &&
+           u.status === 'active'
+    )
     if (!found) return { error: 'Invalid email or password' }
+
     const cos = [...DEFAULT_COMPANIES]
     const first = cos[0]
     setUser(found); setCompanies(cos); setActive(first)
-    persist(found, cos, first.id)
+    persist(found, cos, first.id, currentUsers)
     return { success: true }
   }
 
   const logout = () => {
+    // Keep allUsers in storage so accounts survive logout
+    const saved = (() => { try { return JSON.parse(localStorage.getItem('finix_session') || '{}') } catch(_) { return {} } })()
+    localStorage.setItem('finix_session', JSON.stringify({ allUsers: saved.allUsers || allUsers }))
     setUser(null); setCompanies([]); setActive(null)
-    localStorage.removeItem('finix_session')
   }
 
   const switchCompany = (company) => {
@@ -111,7 +163,7 @@ export function AuthProvider({ children }) {
       name: data.name,
       role: data.role || 'accountant',
       status: 'active',
-      createdAt: new Date().toISOString().slice(0,10),
+      createdAt: new Date().toISOString().slice(0, 10),
     }
     const updated = [...allUsers, newUser]
     setAllUsers(updated)
@@ -141,7 +193,8 @@ export function AuthProvider({ children }) {
   return (
     <AuthContext.Provider value={{
       user, companies, activeCompany, loading, allUsers,
-      login, logout, switchCompany, addCompany, updateCompany, deleteCompany,
+      login, logout, signup, switchCompany,
+      addCompany, updateCompany, deleteCompany,
       addUser, updateUser, deleteUser, resetUserPassword,
     }}>
       {children}
