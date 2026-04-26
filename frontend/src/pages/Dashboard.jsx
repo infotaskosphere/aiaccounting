@@ -1,4 +1,4 @@
-// ── Dashboard.jsx — real data + full journal entry modal + bulk import
+// ── Dashboard.jsx — real data + full journal entry modal + bulk import + EDITABLE
 import { useState, useRef, useCallback } from 'react'
 import { useDropzone } from 'react-dropzone'
 import {
@@ -10,7 +10,7 @@ import {
   Wallet, BarChart2, AlertTriangle, Info, CheckCircle,
   ArrowRight, X, Plus, Zap, Activity, FileText,
   IndianRupee, Receipt, Users, RefreshCw, Upload,
-  Brain, Trash2, PlusCircle, Table2, Edit2, AlertCircle, Shield
+  Brain, Trash2, PlusCircle, Table2, Edit2, AlertCircle, Shield, Save
 } from 'lucide-react'
 import { loadCompanyData, addVoucher, addVouchers, updateVoucher, deleteVoucher, computeFinancials } from '../api/companyStore'
 import { fmt, fmtCr, fmtDate } from '../utils/format'
@@ -61,7 +61,6 @@ const EMPTY_ROW = () => ({
   reference:'', party:'', narration:'', amount:'', cgst:'', sgst:'', igst:'',
 })
 
-// ── CSV Template download ──────────────────────────────────────────────────
 function downloadCSVTemplate() {
   const headers = 'type,date,reference,party,narration,amount,cgst,sgst,igst'
   const sample  = [
@@ -76,7 +75,6 @@ function downloadCSVTemplate() {
   toast.success('Template downloaded')
 }
 
-// ── Parse CSV text into voucher rows ──────────────────────────────────────
 function parseCSV(text) {
   const lines = text.trim().split('\n').filter(Boolean)
   if (lines.length < 2) throw new Error('CSV must have a header row and at least one data row')
@@ -103,7 +101,6 @@ function parseCSV(text) {
   })
 }
 
-// ── Parse XLS/XLSX into voucher rows (SheetJS) ────────────────────────────
 async function loadSheetJS() {
   if (window.XLSX) return window.XLSX
   return new Promise((res, rej) => {
@@ -114,26 +111,67 @@ async function loadSheetJS() {
   })
 }
 
+// ── Robust date parser for XLS cells ──────────────────────────────────────
+// SheetJS with cellDates:true returns JS Date objects; without it returns
+// serial numbers or strings. We handle ALL three cases.
 function parseDate_xls(raw) {
-  if (!raw) return new Date().toISOString().slice(0,10)
+  if (!raw && raw !== 0) return null
+
+  // Case 1: JS Date object (cellDates:true)
+  if (raw instanceof Date && !isNaN(raw)) {
+    const y = raw.getFullYear()
+    const m = String(raw.getMonth()+1).padStart(2,'0')
+    const d = String(raw.getDate()).padStart(2,'0')
+    return `${y}-${m}-${d}`
+  }
+
+  // Case 2: Excel serial number (days since 1900-01-01)
+  if (typeof raw === 'number' && raw > 40000 && raw < 60000) {
+    const d = new Date((raw - 25569) * 86400 * 1000)
+    const y = d.getUTCFullYear()
+    const mo = String(d.getUTCMonth()+1).padStart(2,'0')
+    const dy = String(d.getUTCDate()).padStart(2,'0')
+    return `${y}-${mo}-${dy}`
+  }
+
+  // Case 3: String — various DD/MM/YYYY formats
   const s = String(raw).trim()
-  // DD/MM/YYYY
-  const m1 = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
+  if (!s) return null
+
+  // DD/MM/YYYY or DD-MM-YYYY
+  const m1 = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/)
   if (m1) return `${m1[3]}-${m1[2].padStart(2,'0')}-${m1[1].padStart(2,'0')}`
-  // DD-MM-YYYY
-  const m2 = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/)
-  if (m2) return `${m2[3]}-${m2[2].padStart(2,'0')}-${m2[1].padStart(2,'0')}`
-  // ISO already
+
+  // YYYY-MM-DD already ISO
   if (s.match(/^\d{4}-\d{2}-\d{2}$/)) return s
-  return new Date().toISOString().slice(0,10)
+
+  // Try native parse as last resort
+  const d = new Date(s)
+  if (!isNaN(d)) {
+    return d.toISOString().slice(0,10)
+  }
+  return null
 }
 
+// ── Parse GST string like "6300.00(18.0%)" → 6300 ────────────────────────
+function parseGSTCell(raw) {
+  if (!raw) return 0
+  const s = String(raw)
+  // "6300.00(18.0%)" → extract first number
+  const m = s.match(/^([\d,]+\.?\d*)/)
+  if (m) return parseFloat(m[1].replace(/,/g,'')) || 0
+  return parseFloat(s.replace(/[₹,\s]/g,'')) || 0
+}
+
+// ── Main XLS parser: handles Finix Sale Report & Tally exports ────────────
 async function parseXLSFile(file, voucherType) {
   const XLSX = await loadSheetJS()
   const buf  = await file.arrayBuffer()
-  const wb   = XLSX.read(new Uint8Array(buf), { type: 'array', cellDates: true })
 
-  // Try the first sheet that has recognisable accounting data
+  // Use cellDates:false to get raw serial numbers + strings (more predictable)
+  const wb = XLSX.read(new Uint8Array(buf), { type: 'array', cellDates: false, raw: false })
+
+  // ── Find the best sheet ──────────────────────────────────────────────────
   let ws = null
   for (const name of wb.SheetNames) {
     const candidate = wb.Sheets[name]
@@ -142,7 +180,7 @@ async function parseXLSFile(file, voucherType) {
   }
   if (!ws) ws = wb.Sheets[wb.SheetNames[0]]
 
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false })
 
   // ── 1. Find header row (scan up to row 15) ───────────────────────────────
   let headerIdx = -1
@@ -166,57 +204,75 @@ async function parseXLSFile(file, voucherType) {
     cgst:    col(['cgst']),
     sgst:    col(['sgst']),
     igst:    col(['igst']),
+    gst:     col(['gst']),      // single GST column (like in Sale Items sheet)
     type:    col(['transaction type','type']),
     status:  col(['payment status','status']),
     narr:    col(['description','narration','remarks','particulars']),
   }
 
   const g    = (row, c) => c !== -1 && c < row.length ? String(row[c] ?? '').trim() : ''
-  const pAmt = s => { const n = parseFloat(String(s).replace(/[₹,\s]/g, '')); return isFinite(n) ? n : 0 }
+  const pAmt = s => {
+    if (!s) return 0
+    // Remove currency symbols, commas, spaces
+    const n = parseFloat(String(s).replace(/[₹,\s]/g, ''))
+    return isFinite(n) ? Math.abs(n) : 0
+  }
 
-  // ── 2. Helper: is this row a summary / totals / footer row? ──────────────
-  // A summary row has no valid date AND no valid party/invoice but has a number.
-  // Also catches rows where the date cell literally says "Total", "Grand Total" etc.
+  // ── 2. Detect summary / footer rows ──────────────────────────────────────
   const isSummaryRow = (r) => {
     const dateCell  = g(r, cols.date).toLowerCase()
     const partyCell = cols.party  !== -1 ? g(r, cols.party).toLowerCase()  : ''
     const invCell   = cols.invoice !== -1 ? g(r, cols.invoice).toLowerCase() : ''
 
-    // If the date cell is blank or a label word — it's a summary row
     if (!dateCell || /^(total|grand|subtotal|sum|balance|net|closing)/.test(dateCell)) return true
-    // If a non-date column contains "Total" label (Finix puts "Total" in payment-status column)
     const allCells = r.map(c => String(c).toLowerCase().trim())
     if (allCells.some(c => /^(total|grand total|sub.?total)$/.test(c)) && !partyCell && !invCell) return true
     return false
   }
 
-  // ── 3. Helper: is this row cancelled? ─────────────────────────────────────
+  // ── 3. Detect cancelled rows ──────────────────────────────────────────────
   const isCancelled = (r) => {
     const typeCell   = g(r, cols.type).toLowerCase()
     const statusCell = g(r, cols.status).toLowerCase()
     return typeCell.includes('cancel') || statusCell.includes('cancel')
   }
 
-  // ── 4. Parse & filter data rows ───────────────────────────────────────────
+  // ── 4. Parse data rows ────────────────────────────────────────────────────
   const parsed = rows
-    .slice(headerIdx + 1)                         // skip header
-    .filter(r => r.some(c => c !== ''))           // skip fully blank rows
-    .filter(r => !isSummaryRow(r))                // ✅ FIX: skip totals/footer rows
-    .filter(r => !isCancelled(r))                 // ✅ FIX: skip cancelled transactions
-    .map(r => ({
-      date:    parseDate_xls(g(r, cols.date)),
-      party:   g(r, cols.party),
-      invoice: g(r, cols.invoice),
-      amount:  pAmt(g(r, cols.amount)),
-      cgst:    pAmt(g(r, cols.cgst)),
-      sgst:    pAmt(g(r, cols.sgst)),
-      igst:    pAmt(g(r, cols.igst)),
-      txType:  g(r, cols.type) || voucherType,
-      status:  g(r, cols.status),
-      narr:    g(r, cols.narr),
-    }))
-    .filter(r => r.amount > 0)                    // skip zero-amount rows (e.g. PDV-104)
-    .filter(r => r.date && r.date.length === 10)  // ✅ FIX: skip rows with invalid/unparseable dates
+    .slice(headerIdx + 1)
+    .filter(r => r.some(c => c !== ''))
+    .filter(r => !isSummaryRow(r))
+    .filter(r => !isCancelled(r))
+    .map(r => {
+      const rawDate = cols.date !== -1 ? r[cols.date] : ''
+      const parsedDate = parseDate_xls(rawDate)
+
+      // GST: try dedicated columns first, then single 'gst' column
+      let cgst = 0, sgst = 0, igst = 0
+      if (cols.cgst !== -1 || cols.sgst !== -1 || cols.igst !== -1) {
+        cgst = parseGSTCell(g(r, cols.cgst))
+        sgst = parseGSTCell(g(r, cols.sgst))
+        igst = parseGSTCell(g(r, cols.igst))
+      } else if (cols.gst !== -1) {
+        // Single GST column like "6300.00(18.0%)" — assume IGST if interstate else split
+        const totalGst = parseGSTCell(g(r, cols.gst))
+        cgst = totalGst / 2
+        sgst = totalGst / 2
+      }
+
+      return {
+        date:    parsedDate,
+        party:   g(r, cols.party),
+        invoice: g(r, cols.invoice),
+        amount:  pAmt(g(r, cols.amount)),
+        cgst, sgst, igst,
+        txType:  g(r, cols.type) || voucherType,
+        status:  g(r, cols.status),
+        narr:    g(r, cols.narr),
+      }
+    })
+    .filter(r => r.amount > 0)           // skip zero-amount rows
+    .filter(r => r.date !== null)        // skip rows where date couldn't be parsed
 
   if (parsed.length === 0) throw new Error('No valid transactions found. Check that the file has Date, Party Name, and Amount columns with data.')
 
@@ -227,6 +283,7 @@ async function parseXLSFile(file, voucherType) {
       if (t.includes('purchase')) return 'purchase'
       if (t.includes('receipt'))  return 'receipt'
       if (t.includes('payment'))  return 'payment'
+      if (t.includes('credit note')) return 'journal'
       return voucherType
     })(),
     date:       r.date,
@@ -242,9 +299,105 @@ async function parseXLSFile(file, voucherType) {
   }))
 }
 
+// ── Edit Voucher Modal ─────────────────────────────────────────────────────
+function EditVoucherModal({ voucher, onClose, companyId, onSaved }) {
+  const [form, setForm] = useState({
+    voucher_type: voucher.voucher_type || 'sales',
+    date: voucher.date || new Date().toISOString().slice(0,10),
+    reference: voucher.reference || '',
+    party: voucher.party || '',
+    narration: voucher.narration || '',
+    amount: String(voucher.amount || ''),
+    cgst: String(voucher.cgst || ''),
+    sgst: String(voucher.sgst || ''),
+    igst: String(voucher.igst || ''),
+  })
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+
+  const handleSave = () => {
+    if (!form.narration.trim()) return toast.error('Narration is required')
+    const amt = parseFloat(form.amount)
+    if (!amt || amt <= 0) return toast.error('Enter a valid amount')
+    updateVoucher(companyId, voucher.id, {
+      ...form,
+      amount: amt,
+      cgst: parseFloat(form.cgst) || 0,
+      sgst: parseFloat(form.sgst) || 0,
+      igst: parseFloat(form.igst) || 0,
+    })
+    toast.success('Voucher updated ✓')
+    onSaved()
+    onClose()
+  }
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" style={{ maxWidth:520, width:'95vw' }} onClick={e=>e.stopPropagation()}>
+        <div className="modal-head">
+          <span className="modal-title">Edit Voucher — {voucher.voucher_no}</span>
+          <button className="btn btn-ghost btn-icon" onClick={onClose}><X size={17}/></button>
+        </div>
+        <div className="modal-body" style={{ display:'flex', flexDirection:'column', gap:12 }}>
+          <div className="field-group">
+            <label className="field-label">Voucher Type</label>
+            <select className="input" value={form.voucher_type} onChange={e=>set('voucher_type',e.target.value)}>
+              <option value="sales">Sales Invoice</option>
+              <option value="purchase">Purchase Invoice</option>
+              <option value="receipt">Receipt Voucher</option>
+              <option value="payment">Payment Voucher</option>
+              <option value="journal">Journal Voucher</option>
+              <option value="contra">Contra</option>
+            </select>
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+            <div className="field-group">
+              <label className="field-label">Date</label>
+              <input type="date" className="input" value={form.date} onChange={e=>set('date',e.target.value)}/>
+            </div>
+            <div className="field-group">
+              <label className="field-label">Reference No.</label>
+              <input type="text" className="input" value={form.reference} onChange={e=>set('reference',e.target.value)}/>
+            </div>
+          </div>
+          <div className="field-group">
+            <label className="field-label">Party / Customer</label>
+            <input type="text" className="input" value={form.party} onChange={e=>set('party',e.target.value)}/>
+          </div>
+          <div className="field-group">
+            <label className="field-label">Narration *</label>
+            <input type="text" className="input" value={form.narration} onChange={e=>set('narration',e.target.value)}/>
+          </div>
+          <div className="field-group">
+            <label className="field-label">Taxable Amount (₹) *</label>
+            <input type="number" className="input" value={form.amount} onChange={e=>set('amount',e.target.value)} min="0" step="0.01"/>
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10 }}>
+            <div className="field-group">
+              <label className="field-label">CGST (₹)</label>
+              <input type="number" className="input" value={form.cgst} onChange={e=>set('cgst',e.target.value)} min="0" step="0.01"/>
+            </div>
+            <div className="field-group">
+              <label className="field-label">SGST (₹)</label>
+              <input type="number" className="input" value={form.sgst} onChange={e=>set('sgst',e.target.value)} min="0" step="0.01"/>
+            </div>
+            <div className="field-group">
+              <label className="field-label">IGST (₹)</label>
+              <input type="number" className="input" value={form.igst} onChange={e=>set('igst',e.target.value)} min="0" step="0.01"/>
+            </div>
+          </div>
+        </div>
+        <div className="modal-foot">
+          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={handleSave}><Save size={14}/> Save Changes</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Journal Entry Modal ────────────────────────────────────────────────────
 function JournalModal({ onClose, companyId, onPosted, defaultType }) {
-  const [tab, setTab] = useState('single') // single | bulk | ai
+  const [tab, setTab] = useState('single')
   const [form, setForm] = useState({
     type: defaultType || 'sales',
     date: new Date().toISOString().slice(0,10),
@@ -261,10 +414,8 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
   const [xlsError,    setXlsError]    = useState('')
   const [xlsType,     setXlsType]     = useState(defaultType || 'sales')
   const [xlsFile,     setXlsFile]     = useState(null)
-  const fileRef = useRef()
   const set = (k,v) => setForm(f => ({...f,[k]:v}))
 
-  // ── Single post ──────────────────────────────────────────────────────────
   const handleSingle = () => {
     if (!form.narration.trim()) return toast.error('Narration is required')
     const amt = parseFloat(form.amount)
@@ -284,7 +435,6 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
     onPosted(); onClose()
   }
 
-  // ── Bulk rows post ───────────────────────────────────────────────────────
   const handleBulkPost = () => {
     const valid = rows.filter(r => r.narration?.trim() && parseFloat(r.amount) > 0)
     if (!valid.length) return toast.error('Fill at least one complete row')
@@ -303,7 +453,6 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
     onPosted(); onClose()
   }
 
-  // ── CSV upload ────────────────────────────────────────────────────────────
   const handleCSVFile = async (file) => {
     setCsvError(''); setCsvPreview(null)
     if (!file) return
@@ -323,7 +472,6 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
     onPosted(); onClose()
   }
 
-  // ── XLS upload ────────────────────────────────────────────────────────────
   const handleXLSFile = async (file) => {
     setXlsError(''); setXlsPreview(null); setXlsFile(file)
     if (!file) return
@@ -344,7 +492,6 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
     onPosted(); onClose()
   }
 
-  // ── AI invoice parse ──────────────────────────────────────────────────────
   const handleAIFile = async (file) => {
     if (!file) return
     setAiFile(file); setAiLoading(true)
@@ -381,22 +528,15 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
     setAiLoading(false)
   }
 
-  const onDropAI = useCallback(files => { if (files[0]) handleAIFile(files[0]) }, [])
-  const { getRootProps: aiRootProps, getInputProps: aiInputProps, isDragActive: aiDrag } = useDropzone({
-    onDrop: onDropAI, accept: { 'application/pdf':['.pdf'], 'image/*':['.png','.jpg','.jpeg'] }
-  })
+  const onDropAI  = useCallback(files => { if (files[0]) handleAIFile(files[0]) }, [])
   const onDropCSV = useCallback(files => { if (files[0]) handleCSVFile(files[0]) }, [])
-  const { getRootProps: csvRootProps, getInputProps: csvInputProps, isDragActive: csvDrag } = useDropzone({
-    onDrop: onDropCSV, accept: { 'text/csv':['.csv'], 'text/plain':['.txt'] }
-  })
   const onDropXLS = useCallback(files => { if (files[0]) handleXLSFile(files[0]) }, [xlsType])
+
+  const { getRootProps: aiRootProps,  getInputProps: aiInputProps,  isDragActive: aiDrag  } = useDropzone({ onDrop: onDropAI,  accept: { 'application/pdf':['.pdf'], 'image/*':['.png','.jpg','.jpeg'] } })
+  const { getRootProps: csvRootProps, getInputProps: csvInputProps, isDragActive: csvDrag } = useDropzone({ onDrop: onDropCSV, accept: { 'text/csv':['.csv'], 'text/plain':['.txt'] } })
   const { getRootProps: xlsRootProps, getInputProps: xlsInputProps, isDragActive: xlsDrag } = useDropzone({
     onDrop: onDropXLS,
-    accept: {
-      'application/vnd.ms-excel': ['.xls'],
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
-      'text/csv': ['.csv'],
-    }
+    accept: { 'application/vnd.ms-excel':['.xls'], 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':['.xlsx'], 'text/csv':['.csv'] }
   })
 
   const GSTSummary = ({ cgst, sgst, igst, amount }) => {
@@ -417,7 +557,6 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
           <button className="btn btn-ghost btn-icon" onClick={onClose}><X size={17}/></button>
         </div>
 
-        {/* Tabs */}
         <div style={{ display:'flex', gap:2, padding:'10px 20px 0', background:'var(--surface-2)', borderBottom:'1px solid var(--border)' }}>
           {[
             { key:'single', label:'✏️ Single Entry' },
@@ -439,7 +578,6 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
 
         <div className="modal-body" style={{ maxHeight:'60vh', overflowY:'auto' }}>
 
-          {/* ── Single Entry ─────────────────────────────────────────────── */}
           {tab === 'single' && (
             <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
               <div className="field-group">
@@ -493,7 +631,6 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
             </div>
           )}
 
-          {/* ── Bulk Entry (spreadsheet-style rows) ─────────────────────── */}
           {tab === 'bulk' && (
             <div>
               <p style={{ fontSize:12, color:'var(--text-3)', marginBottom:12 }}>
@@ -565,7 +702,6 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
             </div>
           )}
 
-          {/* ── CSV Import ───────────────────────────────────────────────── */}
           {tab === 'csv' && (
             <div>
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
@@ -574,50 +710,24 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
                   <FileText size={12}/> Download Template
                 </button>
               </div>
-
               <div {...csvRootProps()} style={{ border:`2px dashed ${csvDrag?'var(--primary)':'var(--border)'}`, borderRadius:10, padding:'28px 20px', textAlign:'center', cursor:'pointer', background: csvDrag?'var(--primary-l)':'var(--surface-2)', marginBottom:12 }}>
                 <input {...csvInputProps()}/>
                 <Upload size={24} color="var(--text-3)" style={{ margin:'0 auto 8px' }}/>
                 <p style={{ fontWeight:600, fontSize:13, color:'var(--text)', marginBottom:4 }}>{csvDrag?'Drop CSV here':'Drag & drop CSV or click to browse'}</p>
                 <p style={{ fontSize:11, color:'var(--text-3)' }}>Columns: type, date, reference, party, narration, amount, cgst, sgst, igst</p>
               </div>
-
               {csvLoading && <p style={{ fontSize:12, color:'var(--text-3)' }}>Parsing CSV…</p>}
               {csvError && <div style={{ padding:'10px 12px', background:'#FEF2F2', border:'1px solid #FCA5A5', borderRadius:8, fontSize:12, color:'#B91C1C', marginBottom:8 }}>❌ {csvError}</div>}
-
               {csvPreview && (
                 <div>
                   <div style={{ padding:'8px 12px', background:'#F0FDF4', border:'1px solid #86EFAC', borderRadius:8, fontSize:12, color:'#15803D', marginBottom:8 }}>
                     ✅ {csvPreview.length} rows ready to import
-                  </div>
-                  <div style={{ maxHeight:200, overflowY:'auto', border:'1px solid var(--border)', borderRadius:8 }}>
-                    <table style={{ width:'100%', fontSize:11, borderCollapse:'collapse' }}>
-                      <thead><tr style={{ background:'var(--surface-2)' }}>
-                        {['Type','Date','Party','Narration','Amount','GST'].map(h=>(
-                          <th key={h} style={{ padding:'5px 8px', textAlign:'left', fontWeight:700, color:'var(--text-3)', borderBottom:'1px solid var(--border)' }}>{h}</th>
-                        ))}
-                      </tr></thead>
-                      <tbody>
-                        {csvPreview.slice(0,10).map((r,i) => (
-                          <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
-                            <td style={{ padding:'4px 8px' }}><span className={`badge ${vBadge[r.voucher_type]||'badge-gray'}`}>{r.voucher_type}</span></td>
-                            <td style={{ padding:'4px 8px', color:'var(--text-3)' }}>{r.date}</td>
-                            <td style={{ padding:'4px 8px' }}>{r.party||'—'}</td>
-                            <td style={{ padding:'4px 8px', maxWidth:120, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{r.narration}</td>
-                            <td style={{ padding:'4px 8px', fontFamily:'var(--font-mono)' }}>₹{fmt(r.amount)}</td>
-                            <td style={{ padding:'4px 8px', color:'var(--text-3)' }}>₹{fmt((r.cgst||0)+(r.sgst||0)+(r.igst||0))}</td>
-                          </tr>
-                        ))}
-                        {csvPreview.length > 10 && <tr><td colSpan={6} style={{ padding:'4px 8px', color:'var(--text-3)', fontSize:11 }}>…and {csvPreview.length-10} more rows</td></tr>}
-                      </tbody>
-                    </table>
                   </div>
                 </div>
               )}
             </div>
           )}
 
-          {/* ── XLS Import ──────────────────────────────────────────────── */}
           {tab === 'xls' && (
             <div>
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
@@ -626,7 +736,6 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
                 </p>
               </div>
 
-              {/* Type selector */}
               <div style={{ display:'flex', gap:6, marginBottom:10, alignItems:'center' }}>
                 <span style={{ fontSize:11, fontWeight:700, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.05em' }}>Import as:</span>
                 {['sales','purchase','receipt','payment','journal'].map(t => (
@@ -640,7 +749,6 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
                 ))}
               </div>
 
-              {/* Drop zone */}
               <div {...xlsRootProps()} style={{
                 border:`2px dashed ${xlsDrag?'#D97706':'var(--border)'}`,
                 borderRadius:10, padding:'24px 20px', textAlign:'center', cursor:'pointer',
@@ -683,8 +791,7 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
 
               {xlsPreview && xlsPreview.length > 0 && (
                 <div>
-                  {/* Summary stats */}
-                  <div style={{ display:'flex', gap:12, marginBottom:10, padding:'10px 14px', background:'#F0FDF4', border:'1px solid #86EFAC', borderRadius:8 }}>
+                  <div style={{ display:'flex', gap:12, marginBottom:10, padding:'10px 14px', background:'#F0FDF4', border:'1px solid #86EFAC', borderRadius:8, flexWrap:'wrap' }}>
                     <div style={{ fontSize:12 }}>
                       <span style={{ color:'var(--text-3)' }}>Records: </span>
                       <strong style={{ color:'var(--success)' }}>{xlsPreview.length}</strong>
@@ -704,8 +811,6 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
                       </div>
                     ))}
                   </div>
-
-                  {/* Preview table */}
                   <div style={{ maxHeight:220, overflowY:'auto', border:'1px solid var(--border)', borderRadius:8 }}>
                     <table style={{ width:'100%', fontSize:11, borderCollapse:'collapse' }}>
                       <thead>
@@ -746,7 +851,6 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
             </div>
           )}
 
-          {/* ── AI Invoice Parse ─────────────────────────────────────────── */}
           {tab === 'ai' && (
             <div>
               <p style={{ fontSize:12, color:'var(--text-3)', marginBottom:14 }}>
@@ -775,10 +879,6 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
                   </>
                 )}
               </div>
-              <div style={{ padding:'10px 12px', background:'linear-gradient(135deg,#EFF6FF,#F5F3FF)', border:'1px solid #C7D2FE', borderRadius:8, display:'flex', gap:8, alignItems:'center' }}>
-                <Zap size={14} color="#2563EB"/>
-                <span style={{ fontSize:11, color:'#3730A3' }}>Extracts: party name, date, invoice no., taxable amount, CGST, SGST, IGST, total</span>
-              </div>
             </div>
           )}
         </div>
@@ -804,6 +904,8 @@ export default function Dashboard() {
   const [modal, setModal] = useState(false)
   const [defaultType, setDefaultType] = useState('sales')
   const [dismissed, setDismissed] = useState([])
+  const [editingVoucher, setEditingVoucher] = useState(null)
+  const [showAllVouchers, setShowAllVouchers] = useState(false)
 
   const companyData = loadCompanyData(activeCompany?.id)
   const fin  = computeFinancials(activeCompany?.id)
@@ -815,6 +917,15 @@ export default function Dashboard() {
 
   const openModal = (type = 'sales') => { setDefaultType(type); setModal(true) }
   const handlePosted = () => setRefresh(r => r+1)
+
+  const handleDelete = (v) => {
+    if (!window.confirm(`Delete voucher ${v.voucher_no}? This cannot be undone.`)) return
+    deleteVoucher(activeCompany?.id, v.id)
+    toast.success(`Voucher ${v.voucher_no} deleted`)
+    setRefresh(r => r+1)
+  }
+
+  const displayedVouchers = showAllVouchers ? fin.vouchers : fin.vouchers.slice(0, 10)
 
   return (
     <div className="page-wrap page-enter" key={refresh}>
@@ -869,7 +980,7 @@ export default function Dashboard() {
         ))}
       </div>
 
-      {/* KPIs — now use real computed financials */}
+      {/* KPIs */}
       <div className="kpi-grid">
         {[
           { label:'Total Revenue',  value:fmtCr(bs.income),      icon:DollarSign, color:'blue',   trend:isEmpty?'No data yet':'+vs expenses', dir:'up' },
@@ -1015,22 +1126,63 @@ export default function Dashboard() {
           </div>
         </div>
 
+        {/* ── Transactions table — FULLY EDITABLE ─────────────────────── */}
         <div className="tbl-wrap">
           <div className="tbl-toolbar">
-            <span style={{ fontWeight:600, fontSize:'var(--fs-md)', flex:1 }}>Recent Transactions</span>
-            <button className="btn btn-ghost btn-sm">View all <ArrowRight size={11}/></button>
+            <span style={{ fontWeight:600, fontSize:'var(--fs-md)', flex:1 }}>
+              Recent Transactions
+              {fin.vouchers.length > 0 && <span style={{ fontSize:11, color:'var(--text-3)', marginLeft:8 }}>({fin.vouchers.length} total)</span>}
+            </span>
+            <button className="btn btn-ghost btn-sm" onClick={()=>openModal()}><Plus size={11}/> Add</button>
+            {fin.vouchers.length > 10 && (
+              <button className="btn btn-ghost btn-sm" onClick={()=>setShowAllVouchers(v=>!v)}>
+                {showAllVouchers ? 'Show less' : `View all ${fin.vouchers.length}`} <ArrowRight size={11}/>
+              </button>
+            )}
           </div>
-          {data.recentVouchers?.length > 0 ? (
+          {displayedVouchers.length > 0 ? (
             <table className="tbl">
-              <thead><tr><th>Voucher No.</th><th>Narration</th><th>Type</th><th>Date</th><th style={{ textAlign:'right' }}>Amount (₹)</th></tr></thead>
+              <thead>
+                <tr>
+                  <th>Voucher No.</th>
+                  <th>Party / Narration</th>
+                  <th>Type</th>
+                  <th>Date</th>
+                  <th style={{ textAlign:'right' }}>Amount (₹)</th>
+                  <th style={{ textAlign:'center', width:72 }}>Actions</th>
+                </tr>
+              </thead>
               <tbody>
-                {data.recentVouchers.map(v => (
+                {displayedVouchers.map(v => (
                   <tr key={v.id}>
                     <td><span style={{ fontFamily:'var(--mono)', fontSize:'var(--fs-xs)', color:'var(--accent)', fontWeight:600 }}>{v.voucher_no}</span></td>
-                    <td style={{ maxWidth:180 }}><span style={{ display:'block', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{v.narration}</span></td>
+                    <td style={{ maxWidth:160 }}>
+                      <div style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', fontSize:12, fontWeight:500 }}>{v.party || v.narration}</div>
+                      {v.party && <div style={{ fontSize:10, color:'var(--text-4)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{v.narration}</div>}
+                    </td>
                     <td><span className={`badge ${vBadge[v.voucher_type]||'badge-gray'}`} style={{ textTransform:'capitalize' }}>{v.voucher_type}</span></td>
                     <td style={{ color:'var(--text-4)', fontSize:'var(--fs-xs)', whiteSpace:'nowrap' }}>{fmtDate(v.date)}</td>
-                    <td style={{ textAlign:'right' }}><span className={['sales','receipt'].includes(v.voucher_type)?'cr':'dr'}>{['sales','receipt'].includes(v.voucher_type)?'+':'-'}₹{fmt(v.amount)}</span></td>
+                    <td style={{ textAlign:'right' }}>
+                      <span className={['sales','receipt'].includes(v.voucher_type)?'cr':'dr'}>
+                        {['sales','receipt'].includes(v.voucher_type)?'+':'-'}₹{fmt(v.amount)}
+                      </span>
+                    </td>
+                    <td style={{ textAlign:'center' }}>
+                      <div style={{ display:'flex', gap:4, justifyContent:'center' }}>
+                        <button
+                          title="Edit voucher"
+                          onClick={()=>setEditingVoucher(v)}
+                          style={{ background:'none', border:'1px solid var(--border)', borderRadius:4, padding:'2px 6px', cursor:'pointer', color:'var(--text-3)', display:'flex', alignItems:'center' }}>
+                          <Edit2 size={11}/>
+                        </button>
+                        <button
+                          title="Delete voucher"
+                          onClick={()=>handleDelete(v)}
+                          style={{ background:'none', border:'1px solid #FCA5A5', borderRadius:4, padding:'2px 6px', cursor:'pointer', color:'var(--danger)', display:'flex', alignItems:'center' }}>
+                          <Trash2 size={11}/>
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -1046,6 +1198,14 @@ export default function Dashboard() {
       </div>
 
       {modal && <JournalModal onClose={()=>setModal(false)} companyId={activeCompany?.id} onPosted={handlePosted} defaultType={defaultType}/>}
+      {editingVoucher && (
+        <EditVoucherModal
+          voucher={editingVoucher}
+          companyId={activeCompany?.id}
+          onClose={()=>setEditingVoucher(null)}
+          onSaved={handlePosted}
+        />
+      )}
     </div>
   )
 }
