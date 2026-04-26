@@ -1,64 +1,62 @@
-# backend/app/deps.py
-# FastAPI dependency injection — DB pool, auth, company context
-
-from typing import AsyncGenerator
-import asyncpg
-from fastapi import Depends, HTTPException, Header
-from jose import JWTError, jwt
+"""
+FastAPI Dependencies
+DB connection pool + current-user shortcut.
+"""
+from __future__ import annotations
 import os
+import asyncpg
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-production")
-ALGORITHM  = "HS256"
+from app.auth import CurrentUser, decode_token
 
-# ── DB Pool ────────────────────────────────────────────────────────────────
-# Set by lifespan in main.py
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://postgres:postgres@localhost:5432/aiaccounting",
+)
+
 _pool: asyncpg.Pool | None = None
+bearer_scheme = HTTPBearer()
 
-def set_pool(pool: asyncpg.Pool) -> None:
+
+async def init_pool():
     global _pool
-    _pool = pool
+    _pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=20)
 
-async def get_pool() -> asyncpg.Pool:
+
+async def close_pool():
+    global _pool
+    if _pool:
+        await _pool.close()
+
+
+async def get_db() -> asyncpg.Connection:
     if _pool is None:
-        raise HTTPException(503, "Database not available")
-    return _pool
+        raise RuntimeError("DB pool not initialized")
+    async with _pool.acquire() as conn:
+        yield conn
 
-# ── Auth ───────────────────────────────────────────────────────────────────
-async def get_current_user(authorization: str = Header(default="")) -> dict:
-    """
-    Validate Bearer JWT token.
-    Returns decoded payload: {sub: user_id, company_id: ..., role: ...}
-    """
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(401, "Missing or invalid Authorization header")
-    token = authorization.split(" ", 1)[1]
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        return payload
-    except JWTError:
-        raise HTTPException(401, "Invalid or expired token")
 
-async def get_company_id(user: dict = Depends(get_current_user)) -> str:
-    company_id = user.get("company_id")
-    if not company_id:
-        raise HTTPException(400, "No company associated with this user")
-    return company_id
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    db: asyncpg.Connection = Depends(get_db),
+) -> CurrentUser:
+    payload = decode_token(credentials.credentials)
+    user_id = int(payload["sub"])
+    company_id = payload["company_id"]
+    role = payload["role"]
 
-# ── Optional auth (for dev/demo mode) ──────────────────────────────────────
-DEMO_COMPANY_ID = "demo-company-uuid-0000-000000000001"
+    # verify user still active
+    row = await db.fetchrow(
+        "SELECT id, name, email, is_active FROM users WHERE id=$1", user_id
+    )
+    if not row or not row["is_active"]:
+        raise HTTPException(status_code=401, detail="User inactive or not found")
 
-async def get_company_id_optional(authorization: str = Header(default="")) -> str:
-    """
-    In dev/demo mode returns a fixed company ID without auth.
-    In production, swap this for get_company_id above.
-    """
-    if not authorization:
-        return DEMO_COMPANY_ID
-    try:
-        payload = jwt.decode(
-            authorization.replace("Bearer ", ""),
-            SECRET_KEY, algorithms=[ALGORITHM]
-        )
-        return payload.get("company_id", DEMO_COMPANY_ID)
-    except Exception:
-        return DEMO_COMPANY_ID
+    return CurrentUser(
+        user_id=row["id"],
+        company_id=company_id,
+        role=role,
+        name=row["name"],
+        email=row["email"],
+    )
