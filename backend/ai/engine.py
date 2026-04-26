@@ -1396,3 +1396,99 @@ def detect_voucher_type(narration: str, amount: float = 0.0,
         "credit_account": v.credit_account,
         "confidence":     v.confidence,
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 6. VECTOR MEMORY  (persistent narration → account mapping)
+# Added in v2 upgrade — supplements rule-based classifier above
+# ═══════════════════════════════════════════════════════════════════════════════
+
+import json as _json
+import os as _os
+from pathlib import Path as _Path
+
+MEMORY_PATH = _Path(_os.getenv("AI_MEMORY_PATH", "/tmp/ai_memory.json"))
+
+_NUMPY_AVAILABLE = False
+try:
+    import numpy as _np
+    _NUMPY_AVAILABLE = True
+except ImportError:
+    pass
+
+_EMBED_AVAILABLE = False
+_embed_model = None
+try:
+    from sentence_transformers import SentenceTransformer as _ST
+    _embed_model = _ST(_os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2"))
+    _EMBED_AVAILABLE = True
+except Exception:
+    pass
+
+
+class VectorMemory:
+    """
+    Flat vector store: {narration → (account_code, embedding)}.
+    Persisted as JSON. For production, replace with pgvector or Chroma.
+    Works alongside TransactionClassifier — called first for user-corrected entries.
+    """
+
+    def __init__(self):
+        self._store: list[dict] = []
+        self._load()
+
+    def _load(self):
+        if MEMORY_PATH.exists():
+            try:
+                self._store = _json.loads(MEMORY_PATH.read_text())
+            except Exception:
+                pass
+
+    def _save(self):
+        try:
+            MEMORY_PATH.write_text(_json.dumps(self._store))
+        except Exception:
+            pass
+
+    def _embed(self, text: str):
+        if not _EMBED_AVAILABLE or _embed_model is None:
+            return None
+        return _embed_model.encode(text, normalize_embeddings=True).tolist()
+
+    def add(self, narration: str, account_code: str):
+        emb = self._embed(narration)
+        self._store = [s for s in self._store if s["narration"] != narration]
+        self._store.append({"narration": narration, "account_code": account_code, "embedding": emb})
+        self._save()
+
+    def search(self, query: str, top_k: int = 3) -> list[dict]:
+        if not _EMBED_AVAILABLE or not _NUMPY_AVAILABLE or not self._store:
+            return []
+        q_vec = self._embed(query)
+        if q_vec is None:
+            return []
+        q_arr = _np.array(q_vec)
+        results = []
+        for entry in self._store:
+            if entry.get("embedding") is None:
+                continue
+            score = float(_np.dot(q_arr, _np.array(entry["embedding"])))
+            results.append({"narration": entry["narration"], "account_code": entry["account_code"], "score": score})
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return results[:top_k]
+
+    def best_match(self, query: str, threshold: float = 0.80):
+        hits = self.search(query, top_k=1)
+        return hits[0] if hits and hits[0]["score"] >= threshold else None
+
+    def size(self) -> int:
+        return len(self._store)
+
+
+_memory_singleton = None
+
+def get_memory() -> VectorMemory:
+    global _memory_singleton
+    if _memory_singleton is None:
+        _memory_singleton = VectorMemory()
+    return _memory_singleton
