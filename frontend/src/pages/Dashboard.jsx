@@ -172,11 +172,32 @@ async function parseXLSFile(file, voucherType) {
   const wb = XLSX.read(new Uint8Array(buf), { type: 'array', cellDates: false, raw: false })
 
   // ── Find the best sheet ──────────────────────────────────────────────────
+  // Prefer invoice-level summary sheets (Sale Report, Purchase Report) over
+  // line-item sheets (Sale Items, Purchase Items) to avoid double-counting
+  // multi-item invoices and to correctly capture invoice-level totals.
   let ws = null
+  let wsName = ''
+
+  // Score each sheet: higher = more likely to be the right invoice-level sheet
+  const scoreSheet = (name, candidate) => {
+    const text = XLSX.utils.sheet_to_csv(candidate).toLowerCase()
+    if (!(/date/.test(text) && /(amount|total|invoice)/.test(text))) return -1
+    let score = 1
+    // Prefer sheets named like "Sale Report" / "Purchase Report" (summary level)
+    if (/report/i.test(name)) score += 10
+    // Penalise line-item sheets that have item/product columns
+    if (/item/i.test(name)) score -= 5
+    if (/quantity|qty|unit price|price\/unit/i.test(text)) score -= 3
+    // Bonus for having transaction type / payment status columns (Finix-style)
+    if (/transaction type|payment status/i.test(text)) score += 5
+    return score
+  }
+
+  let bestScore = -Infinity
   for (const name of wb.SheetNames) {
     const candidate = wb.Sheets[name]
-    const text = XLSX.utils.sheet_to_csv(candidate)
-    if (/date/i.test(text) && /(amount|total|invoice)/i.test(text)) { ws = candidate; break }
+    const score = scoreSheet(name, candidate)
+    if (score > bestScore) { bestScore = score; ws = candidate; wsName = name }
   }
   if (!ws) ws = wb.Sheets[wb.SheetNames[0]]
 
@@ -237,7 +258,15 @@ async function parseXLSFile(file, voucherType) {
     return typeCell.includes('cancel') || statusCell.includes('cancel')
   }
 
-  // ── 4. Parse data rows ────────────────────────────────────────────────────
+  // ── 4. Detect Credit Note rows — these are RETURNS/REVERSALS, not sales ──
+  // Credit notes reduce receivables; they must NOT be added as positive sales.
+  // We import them as 'journal' with negative amount so totals stay correct.
+  const isCreditNote = (r) => {
+    const typeCell = g(r, cols.type).toLowerCase()
+    return typeCell.includes('credit note') || typeCell.includes('credit memo')
+  }
+
+  // ── 5. Parse data rows ────────────────────────────────────────────────────
   const parsed = rows
     .slice(headerIdx + 1)
     .filter(r => r.some(c => c !== ''))
@@ -246,6 +275,7 @@ async function parseXLSFile(file, voucherType) {
     .map(r => {
       const rawDate = cols.date !== -1 ? r[cols.date] : ''
       const parsedDate = parseDate_xls(rawDate)
+      const creditNote = isCreditNote(r)
 
       // GST: try dedicated columns first, then single 'gst' column
       let cgst = 0, sgst = 0, igst = 0
@@ -260,18 +290,23 @@ async function parseXLSFile(file, voucherType) {
         sgst = totalGst / 2
       }
 
+      // For credit notes the GST is also reversed — negate it
+      if (creditNote) { cgst = -cgst; sgst = -sgst; igst = -igst }
+
       return {
-        date:    parsedDate,
-        party:   g(r, cols.party),
-        invoice: g(r, cols.invoice),
-        amount:  pAmt(g(r, cols.amount)),
+        date:       parsedDate,
+        party:      g(r, cols.party),
+        invoice:    g(r, cols.invoice),
+        // Credit notes are stored with negative amount so they reduce the total
+        amount:     creditNote ? -pAmt(g(r, cols.amount)) : pAmt(g(r, cols.amount)),
         cgst, sgst, igst,
-        txType:  g(r, cols.type) || voucherType,
-        status:  g(r, cols.status),
-        narr:    g(r, cols.narr),
+        txType:     g(r, cols.type) || voucherType,
+        status:     g(r, cols.status),
+        narr:       g(r, cols.narr),
+        creditNote,
       }
     })
-    .filter(r => r.amount > 0)           // skip zero-amount rows
+    .filter(r => r.amount !== 0)         // skip zero-amount rows
     .filter(r => r.date !== null)        // skip rows where date couldn't be parsed
 
   if (parsed.length === 0) throw new Error('No valid transactions found. Check that the file has Date, Party Name, and Amount columns with data.')
@@ -279,23 +314,27 @@ async function parseXLSFile(file, voucherType) {
   return parsed.map(r => ({
     voucher_type: (() => {
       const t = (r.txType || '').toLowerCase()
+      // Credit Notes are journal/reversal entries — never count as sales
+      if (r.creditNote)           return 'journal'
       if (t.includes('sale'))     return 'sales'
       if (t.includes('purchase')) return 'purchase'
       if (t.includes('receipt'))  return 'receipt'
       if (t.includes('payment'))  return 'payment'
-      if (t.includes('credit note')) return 'journal'
       return voucherType
     })(),
     date:       r.date,
     reference:  r.invoice,
     party:      r.party,
     narration:  r.narr || `${r.txType || voucherType} - ${r.party}${r.invoice ? ` (${r.invoice})` : ''}`.trim(),
-    amount:     r.amount,
-    cgst:       r.cgst,
-    sgst:       r.sgst,
-    igst:       r.igst,
+    // Store absolute amount; sign is captured via voucher_type (sales=credit, journal=neutral)
+    amount:     Math.abs(r.amount),
+    cgst:       Math.abs(r.cgst),
+    sgst:       Math.abs(r.sgst),
+    igst:       Math.abs(r.igst),
     source:     'xls_import',
     xls_status: r.status,
+    // Flag so UI can show "Credit Note" label
+    is_credit_note: r.creditNote || false,
   }))
 }
 
@@ -798,15 +837,21 @@ function JournalModal({ onClose, companyId, onPosted, defaultType }) {
                     </div>
                     <div style={{ fontSize:12 }}>
                       <span style={{ color:'var(--text-3)' }}>Total Amount: </span>
-                      <strong style={{ color:'var(--success)' }}>₹{fmt(xlsPreview.reduce((s,r) => s + r.amount, 0))}</strong>
+                      <strong style={{ color:'var(--success)' }}>₹{fmt(xlsPreview.filter(r=>!r.is_credit_note).reduce((s,r) => s + r.amount, 0))}</strong>
                     </div>
                     <div style={{ fontSize:12 }}>
                       <span style={{ color:'var(--text-3)' }}>Total GST: </span>
-                      <strong>₹{fmt(xlsPreview.reduce((s,r) => s + (r.cgst||0)+(r.sgst||0)+(r.igst||0), 0))}</strong>
+                      <strong>₹{fmt(xlsPreview.filter(r=>!r.is_credit_note).reduce((s,r) => s + (r.cgst||0)+(r.sgst||0)+(r.igst||0), 0))}</strong>
                     </div>
-                    {Object.entries(xlsPreview.reduce((acc,r) => { acc[r.voucher_type]=(acc[r.voucher_type]||0)+1; return acc }, {})).map(([t,c]) => (
+                    {xlsPreview.some(r=>r.is_credit_note) && (
+                      <div style={{ fontSize:12 }}>
+                        <span style={{ color:'#92400E' }}>Credit Notes (deducted): </span>
+                        <strong style={{ color:'#B45309' }}>-₹{fmt(xlsPreview.filter(r=>r.is_credit_note).reduce((s,r)=>s+r.amount,0))}</strong>
+                      </div>
+                    )}
+                    {Object.entries(xlsPreview.reduce((acc,r) => { const k=r.is_credit_note?'credit note':r.voucher_type; acc[k]=(acc[k]||0)+1; return acc }, {})).map(([t,c]) => (
                       <div key={t} style={{ fontSize:12 }}>
-                        <span className={`badge ${vBadge[t]||'badge-gray'}`} style={{ textTransform:'capitalize' }}>{t}</span>
+                        <span className={`badge ${t==='credit note'?'badge-amber':vBadge[t]||'badge-gray'}`} style={{ textTransform:'capitalize' }}>{t}</span>
                         <strong style={{ marginLeft:4 }}>{c}</strong>
                       </div>
                     ))}
