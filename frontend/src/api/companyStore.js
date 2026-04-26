@@ -15,6 +15,7 @@ function emptyCompanyData() {
     },
     vouchers: [],
     bankTransactions: [],
+    customAccountHeads: [],      // ← persisted custom account heads
     gst: {
       period: '',
       output: { taxable:0, cgst:0, sgst:0, igst:0, total:0 },
@@ -241,4 +242,44 @@ function generateVoucherNo(vouchers, type) {
 export function clearCompanyData(companyId) {
   if (!companyId) return
   localStorage.removeItem(STORE_KEY(companyId))
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// CUSTOM ACCOUNT HEADS  — company-specific saved heads
+// ══════════════════════════════════════════════════════════════════════════
+
+export function loadCustomHeads(companyId) {
+  const data = loadCompanyData(companyId)
+  return data.customAccountHeads || []
+}
+
+export function addCustomHead(companyId, head) {
+  const trimmed = (head || '').trim()
+  if (!trimmed) return
+  const data = loadCompanyData(companyId)
+  const heads = data.customAccountHeads || []
+  // No duplicates (case-insensitive)
+  if (heads.some(h => h.toLowerCase() === trimmed.toLowerCase())) return
+  data.customAccountHeads = [...heads, trimmed]
+  saveCompanyData(companyId, data)
+}
+
+export function renameCustomHead(companyId, oldHead, newHead) {
+  const trimmed = (newHead || '').trim()
+  if (!trimmed) return
+  const data = loadCompanyData(companyId)
+  const heads = data.customAccountHeads || []
+  data.customAccountHeads = heads.map(h => h === oldHead ? trimmed : h)
+  // Also update any transactions already tagged with the old head
+  data.bankTransactions = (data.bankTransactions || []).map(t =>
+    t.ai_suggested_account === oldHead ? { ...t, ai_suggested_account: trimmed } : t
+  )
+  saveCompanyData(companyId, data)
+}
+
+export function deleteCustomHead(companyId, head) {
+  const data = loadCompanyData(companyId)
+  const heads = data.customAccountHeads || []
+  data.customAccountHeads = heads.filter(h => h !== head)
+  saveCompanyData(companyId, data)
 }
