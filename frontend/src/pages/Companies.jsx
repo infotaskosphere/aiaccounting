@@ -1,286 +1,247 @@
-// src/api/companyStore.js
-// Real per-company data store persisted in localStorage.
-// New companies start with ZERO data — no mock fallback.
+// src/pages/Companies.jsx — FIXED: FY year properly saved + updateCompany
+import { useState } from 'react'
+import { Plus, Building2, Trash2, Check, X, AlertTriangle, Edit2 } from 'lucide-react'
+import { useAuth } from '../context/AuthContext'
+import toast from 'react-hot-toast'
 
-const STORE_KEY = (id) => `finix_data_${id}`
+const BIZ_TYPES = [
+  'Private Limited', 'Public Limited', 'Partnership Firm',
+  'Proprietorship', 'LLP', 'OPC', 'Trust / NGO',
+]
 
-// ── Empty skeleton for a brand-new company ────────────────────────────────
-function emptyCompanyData() {
-  return {
-    dashboard: {
-      balanceSheet: { assets:0, liabilities:0, equity:0, income:0, expenses:0, net_profit:0 },
-      cashflow: [],
-      recentVouchers: [],
-      alerts: [],
-    },
-    vouchers: [],
-    bankTransactions: [],
-    bankAccounts: [],             // ← registered bank accounts
-    customAccountHeads: [],      // ← persisted custom account heads
-    gst: {
-      period: '',
-      output: { taxable:0, cgst:0, sgst:0, igst:0, total:0 },
-      input:  { taxable:0, cgst:0, sgst:0, igst:0, total:0 },
-      net_payable: { cgst:0, sgst:0, igst:0, total:0 },
-      b2b_count:0, b2c_count:0, transactions:[],
-    },
-    payroll: {
-      period:'',
-      employees:[],
-      totals:{ gross:0, pf_employee:0, esic_employee:0, tds:0, net:0, ctc:0 },
-    },
+const COLORS = ['#2563EB','#7C3AED','#059669','#DC2626','#D97706','#0891B2','#BE185D']
+
+// Generate FY options from 2019-20 to 2030-31
+const FY_OPTIONS = Array.from({ length: 12 }, (_, i) => {
+  const start = 2019 + i
+  const end   = String(start + 1).slice(-2)
+  return `${start}-${end}`
+}).reverse()
+
+export default function Companies() {
+  const { companies, activeCompany, switchCompany, addCompany, updateCompany, deleteCompany } = useAuth()
+  const [showAdd,  setShowAdd]  = useState(false)
+  const [editId,   setEditId]   = useState(null)
+  const [delId,    setDelId]    = useState(null)
+  const [form, setForm] = useState({ name: '', type: 'Private Limited', gstin: '', fy: '2025-26', color: COLORS[0] })
+
+  const openEdit = (co) => {
+    // Strip "FY " prefix for the select value
+    const fyRaw = co.fy?.replace('FY ', '') || '2025-26'
+    setForm({ name: co.name, type: co.type, gstin: co.gstin || '', fy: fyRaw, color: co.color })
+    setEditId(co.id)
   }
-}
 
-// ── Load company data from localStorage ──────────────────────────────────
-export function loadCompanyData(companyId) {
-  if (!companyId) return emptyCompanyData()
-  try {
-    const raw = localStorage.getItem(STORE_KEY(companyId))
-    if (raw) return JSON.parse(raw)
-  } catch (_) {}
-  return emptyCompanyData()
-}
-
-// ── Save company data to localStorage ────────────────────────────────────
-export function saveCompanyData(companyId, data) {
-  if (!companyId) return
-  try {
-    localStorage.setItem(STORE_KEY(companyId), JSON.stringify(data))
-  } catch (_) {}
-}
-
-// ── Add a voucher and recalculate dashboard ───────────────────────────────
-export function addVoucher(companyId, voucher) {
-  const data = loadCompanyData(companyId)
-  const newVoucher = {
-    id: `v-${Date.now()}`,
-    voucher_no: generateVoucherNo(data.vouchers, voucher.voucher_type || voucher.type),
-    ...voucher,
-    voucher_type: voucher.voucher_type || voucher.type,
-    status: 'posted',
-    source: voucher.source || 'manual',
-    created_at: new Date().toISOString(),
+  const handleAdd = () => {
+    if (!form.name.trim()) return toast.error('Company name is required')
+    addCompany(form)
+    setShowAdd(false)
+    setForm({ name: '', type: 'Private Limited', gstin: '', fy: '2025-26', color: COLORS[0] })
+    toast.success('Company added successfully')
   }
-  data.vouchers = [newVoucher, ...data.vouchers]
-  data.dashboard.recentVouchers = data.vouchers.slice(0, 10)
-  recalcDashboard(data)
-  saveCompanyData(companyId, data)
-  return newVoucher
-}
 
-// ── Add bank transactions from imported statement ─────────────────────────
-export function addBankTransactions(companyId, transactions) {
-  const data = loadCompanyData(companyId)
-  const existingIds = new Set(data.bankTransactions.map(t => t.id))
-  const newTxns = transactions
-    .filter(t => !existingIds.has(t.id))
-    .map((t, i) => ({
-      ...t,
-      id: t.id || `bt-${Date.now()}-${i}`,
-      status: 'unmatched',
-    }))
-  data.bankTransactions = [...newTxns, ...data.bankTransactions]
-  saveCompanyData(companyId, data)
-  return newTxns
-}
+  const handleEdit = () => {
+    if (!form.name.trim()) return toast.error('Company name is required')
+    updateCompany(editId, {
+      ...form,
+      initials: form.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase(),
+    })
+    setEditId(null)
+    toast.success('Company updated')
+  }
 
-// ── Update a bank transaction status ─────────────────────────────────────
-export function updateBankTransaction(companyId, txnId, updates) {
-  const data = loadCompanyData(companyId)
-  data.bankTransactions = data.bankTransactions.map(t =>
-    t.id === txnId ? { ...t, ...updates } : t
+  const handleDelete = (id) => {
+    if (companies.length === 1) return toast.error('You must have at least one company')
+    deleteCompany(id)
+    setDelId(null)
+    toast.success('Company removed')
+  }
+
+  const FormModal = ({ title, onSave, onClose }) => (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-head">
+          <span className="modal-title">{title}</span>
+          <button className="btn btn-ghost btn-icon" onClick={onClose}><X size={17} /></button>
+        </div>
+        <div className="modal-body">
+          <div className="field-group">
+            <label className="field-label">Company Name *</label>
+            <input
+              className="input" placeholder="e.g. Sharma Traders Pvt Ltd"
+              value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} autoFocus
+            />
+          </div>
+          <div className="input-group">
+            <div className="field-group">
+              <label className="field-label">Business Type</label>
+              <select className="input select" value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}>
+                {BIZ_TYPES.map(t => <option key={t}>{t}</option>)}
+              </select>
+            </div>
+            <div className="field-group">
+              <label className="field-label">Financial Year</label>
+              <select className="input select" value={form.fy} onChange={e => setForm(f => ({ ...f, fy: e.target.value }))}>
+                {FY_OPTIONS.map(fy => <option key={fy} value={fy}>{`FY ${fy}`}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="field-group">
+            <label className="field-label">GSTIN (Optional)</label>
+            <input
+              className="input" placeholder="e.g. 27AABCA1234C1ZX"
+              value={form.gstin}
+              onChange={e => setForm(f => ({ ...f, gstin: e.target.value.toUpperCase() }))}
+              style={{ fontFamily: 'var(--mono)', fontSize: 'var(--fs-sm)' }}
+              maxLength={15}
+            />
+          </div>
+          <div className="field-group">
+            <label className="field-label">Company Color</label>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {COLORS.map(c => (
+                <button
+                  key={c} onClick={() => setForm(f => ({ ...f, color: c }))}
+                  style={{
+                    width: 28, height: 28, borderRadius: 6, background: c,
+                    border: form.color === c ? '3px solid var(--text)' : '2px solid transparent',
+                    cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center'
+                  }}>
+                  {form.color === c && <Check size={13} color="white" />}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="modal-foot">
+          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={onSave}><Plus size={14} /> {title.includes('Edit') ? 'Save Changes' : 'Add Company'}</button>
+        </div>
+      </div>
+    </div>
   )
-  saveCompanyData(companyId, data)
-}
 
-// ── Clear all bank transactions ───────────────────────────────────────────
-export function clearBankTransactions(companyId) {
-  const data = loadCompanyData(companyId)
-  data.bankTransactions = []
-  saveCompanyData(companyId, data)
-}
+  return (
+    <div className="page-wrap page-enter">
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">Companies</h1>
+          <p className="page-sub">Manage multiple companies under one FINIX account</p>
+        </div>
+        <div className="page-actions">
+          <button className="btn btn-primary" onClick={() => { setForm({ name: '', type: 'Private Limited', gstin: '', fy: '2025-26', color: COLORS[0] }); setShowAdd(true) }}>
+            <Plus size={14} /> Add Company
+          </button>
+        </div>
+      </div>
 
-// ── Add multiple vouchers at once (bulk import) ───────────────────────────
-export function addVouchers(companyId, vouchers) {
-  const data = loadCompanyData(companyId)
-  const newVouchers = vouchers.map(v => ({
-    id: `v-${Date.now()}-${Math.random().toString(36).slice(2,7)}`,
-    voucher_no: generateVoucherNo(data.vouchers, v.voucher_type || v.type),
-    ...v,
-    voucher_type: v.voucher_type || v.type || 'journal',
-    status: 'posted',
-    source: v.source || 'bulk_import',
-    created_at: new Date().toISOString(),
-  }))
-  data.vouchers = [...newVouchers, ...data.vouchers]
-  data.dashboard.recentVouchers = data.vouchers.slice(0, 10)
-  recalcDashboard(data)
-  saveCompanyData(companyId, data)
-  return newVouchers
-}
+      {/* Company grid */}
+      <div className="co-grid">
+        {companies.map(co => (
+          <div
+            key={co.id}
+            className={`co-card${activeCompany?.id === co.id ? ' selected' : ''}`}
+            onClick={() => switchCompany(co)}
+          >
+            {activeCompany?.id === co.id && (
+              <div className="co-card-badge">
+                <span className="badge badge-blue"><Check size={9} /> Active</span>
+              </div>
+            )}
+            <div className="co-card-av" style={{ background: co.color }}>{co.initials}</div>
+            <div className="co-card-name">{co.name}</div>
+            <div className="co-card-type">{co.type}</div>
+            {/* FY display */}
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', fontWeight: 600, marginTop: 4 }}>
+              {co.fy}
+            </div>
+            {co.gstin && (
+              <div style={{ fontFamily: 'var(--mono)', fontSize: 'var(--fs-xs)', color: 'var(--text-3)', marginTop: 4 }}>
+                GSTIN: {co.gstin}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 6, marginTop: 14 }}>
+              <button
+                className="btn btn-secondary btn-sm" style={{ flex: 1 }}
+                onClick={e => { e.stopPropagation(); switchCompany(co) }}
+              >
+                {activeCompany?.id === co.id ? 'Active' : 'Switch to'}
+              </button>
+              <button
+                className="btn btn-sm"
+                style={{ background: 'var(--surface-2)', color: 'var(--text-3)', border: '1px solid var(--border)' }}
+                onClick={e => { e.stopPropagation(); openEdit(co) }}
+                title="Edit company"
+              >
+                <Edit2 size={12} />
+              </button>
+              <button
+                className="btn btn-sm"
+                style={{ background: 'var(--danger-l)', color: 'var(--danger)', border: '1px solid var(--danger-b)' }}
+                onClick={e => { e.stopPropagation(); setDelId(co.id) }}
+                title="Delete company"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+          </div>
+        ))}
 
-// ── Compute full P&L and Balance Sheet from vouchers ─────────────────────
-export function computeFinancials(companyId) {
-  const data = loadCompanyData(companyId)
-  const vouchers = data.vouchers || []
+        {/* Add card */}
+        <div className="add-co-card" onClick={() => { setForm({ name: '', type: 'Private Limited', gstin: '', fy: '2025-26', color: COLORS[0] }); setShowAdd(true) }}>
+          <Plus size={22} />
+          <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 600 }}>Add New Company</div>
+          <div style={{ fontSize: 'var(--fs-xs)' }}>Set up another entity for accounting</div>
+        </div>
+      </div>
 
-  const income    = vouchers.filter(v => ['sales','receipt'].includes(v.voucher_type)).reduce((s,v) => s + (Number(v.amount)||0), 0)
-  const expenses  = vouchers.filter(v => ['purchase','payment'].includes(v.voucher_type)).reduce((s,v) => s + (Number(v.amount)||0), 0)
-  const cgstOut   = vouchers.filter(v => ['sales'].includes(v.voucher_type)).reduce((s,v) => s + (Number(v.cgst)||0), 0)
-  const sgstOut   = vouchers.filter(v => ['sales'].includes(v.voucher_type)).reduce((s,v) => s + (Number(v.sgst)||0), 0)
-  const cgstIn    = vouchers.filter(v => ['purchase'].includes(v.voucher_type)).reduce((s,v) => s + (Number(v.cgst)||0), 0)
-  const sgstIn    = vouchers.filter(v => ['purchase'].includes(v.voucher_type)).reduce((s,v) => s + (Number(v.sgst)||0), 0)
+      {/* Info box */}
+      <div style={{
+        marginTop: 24, padding: '14px 16px',
+        background: 'var(--info-l)', border: '1px solid var(--info-b)',
+        borderRadius: 'var(--r-lg)', fontSize: 'var(--fs-sm)',
+        display: 'flex', gap: 10, alignItems: 'flex-start', color: '#0C4A6E'
+      }}>
+        <Building2 size={16} style={{ marginTop: 1, flexShrink: 0, color: 'var(--info)' }} />
+        <div>
+          <div style={{ fontWeight: 600, marginBottom: 3 }}>Multi-Company Accounting</div>
+          Each company has its own separate chart of accounts, vouchers, GST filings and payroll.
+          Switch between companies using the company selector in the top navigation bar.
+          Your login credentials work across all companies.
+          <br /><strong style={{ color: 'var(--info)' }}>Data is saved to browser localStorage</strong> — changes persist across page reloads.
+        </div>
+      </div>
 
-  // Build trial balance from vouchers grouped by narration type
-  const accountMap = {}
-  const addEntry = (name, group, dr, cr) => {
-    if (!accountMap[name]) accountMap[name] = { name, group, dr: 0, cr: 0 }
-    accountMap[name].dr += dr
-    accountMap[name].cr += cr
-  }
+      {/* Add Modal */}
+      {showAdd && <FormModal title="Add New Company" onSave={handleAdd} onClose={() => setShowAdd(false)} />}
 
-  vouchers.forEach(v => {
-    const amt = Number(v.amount) || 0
-    const cgst = Number(v.cgst) || 0
-    const sgst = Number(v.sgst) || 0
-    const igst = Number(v.igst) || 0
-    const total = amt + cgst + sgst + igst
-    const party = v.party || 'General'
+      {/* Edit Modal */}
+      {editId && <FormModal title="Edit Company" onSave={handleEdit} onClose={() => setEditId(null)} />}
 
-    if (v.voucher_type === 'sales') {
-      addEntry('Sales Revenue', 'Revenue from Operations', 0, amt)
-      addEntry(party + ' (Debtor)', 'Trade Receivables', total, 0)
-      if (cgst) addEntry('Output GST - CGST', 'Other Current Liabilities', 0, cgst)
-      if (sgst) addEntry('Output GST - SGST', 'Other Current Liabilities', 0, sgst)
-      if (igst) addEntry('Output GST - IGST', 'Other Current Liabilities', 0, igst)
-    } else if (v.voucher_type === 'purchase') {
-      addEntry('Purchases', 'Cost of Goods Sold', amt, 0)
-      addEntry(party + ' (Creditor)', 'Trade Payables', 0, total)
-      if (cgst) addEntry('Input GST - CGST', 'Other Current Assets', cgst, 0)
-      if (sgst) addEntry('Input GST - SGST', 'Other Current Assets', sgst, 0)
-      if (igst) addEntry('Input GST - IGST', 'Other Current Assets', igst, 0)
-    } else if (v.voucher_type === 'receipt') {
-      addEntry('Bank / Cash', 'Cash & Cash Equivalents', amt, 0)
-      addEntry(party + ' (Debtor)', 'Trade Receivables', 0, amt)
-    } else if (v.voucher_type === 'payment') {
-      addEntry(party + ' (Creditor)', 'Trade Payables', amt, 0)
-      addEntry('Bank / Cash', 'Cash & Cash Equivalents', 0, amt)
-    } else {
-      addEntry(v.narration || 'Journal Entry', 'Journal', amt, 0)
-    }
-  })
-
-  const trialBalance = Object.values(accountMap).map((a, i) => ({
-    code: String(1000 + i),
-    name: a.name,
-    group: a.group,
-    opDr: 0, opCr: 0,
-    txDr: a.dr, txCr: a.cr,
-    clDr: a.dr > a.cr ? a.dr - a.cr : 0,
-    clCr: a.cr > a.dr ? a.cr - a.dr : 0,
-  }))
-
-  return {
-    income, expenses,
-    net_profit: income - expenses,
-    assets: income,
-    liabilities: expenses,
-    equity: income - expenses,
-    cgstOut, sgstOut, cgstIn, sgstIn,
-    netGST: (cgstOut + sgstOut) - (cgstIn + sgstIn),
-    trialBalance,
-    vouchers,
-    hasRealData: vouchers.length > 0,
-  }
-}
-
-// ── Recalculate dashboard totals from voucher list ────────────────────────
-function recalcDashboard(data) {
-  let income = 0, expenses = 0
-  for (const v of data.vouchers) {
-    const amt = Number(v.amount) || 0
-    if (['sales', 'receipt'].includes(v.voucher_type)) income += amt
-    if (['purchase', 'payment'].includes(v.voucher_type)) expenses += amt
-  }
-  const net_profit = income - expenses
-  data.dashboard.balanceSheet = {
-    assets: income,
-    liabilities: expenses,
-    equity: net_profit,
-    income,
-    expenses,
-    net_profit,
-  }
-
-  // Monthly cashflow from vouchers (last 6 months)
-  const monthMap = {}
-  for (const v of data.vouchers) {
-    if (!v.date) continue
-    const d = new Date(v.date)
-    const key = d.toLocaleString('default', { month: 'short' })
-    if (!monthMap[key]) monthMap[key] = { month: key, inflow: 0, outflow: 0, _ts: d.getTime() }
-    const amt = Number(v.amount) || 0
-    if (['sales', 'receipt'].includes(v.voucher_type)) monthMap[key].inflow += amt
-    else monthMap[key].outflow += amt
-  }
-  data.dashboard.cashflow = Object.values(monthMap)
-    .sort((a, b) => a._ts - b._ts)
-    .slice(-6)
-    .map(({ _ts, ...rest }) => rest)
-}
-
-// ── Generate voucher number ───────────────────────────────────────────────
-function generateVoucherNo(vouchers, type) {
-  const prefixMap = { sales:'SI', purchase:'PI', receipt:'RV', payment:'PV', journal:'JV', contra:'CV' }
-  const prefix = prefixMap[type] || 'JV'
-  const year = new Date().getFullYear()
-  const count = vouchers.filter(v => (v.voucher_no || '').startsWith(prefix)).length + 1
-  return `${prefix}-${year}-${String(count).padStart(4, '0')}`
-}
-
-// ── Clear all data for a company ──────────────────────────────────────────
-export function clearCompanyData(companyId) {
-  if (!companyId) return
-  localStorage.removeItem(STORE_KEY(companyId))
-}
-
-// ══════════════════════════════════════════════════════════════════════════
-// CUSTOM ACCOUNT HEADS  — company-specific saved heads
-// ══════════════════════════════════════════════════════════════════════════
-
-export function loadCustomHeads(companyId) {
-  const data = loadCompanyData(companyId)
-  return data.customAccountHeads || []
-}
-
-export function addCustomHead(companyId, head) {
-  const trimmed = (head || '').trim()
-  if (!trimmed) return
-  const data = loadCompanyData(companyId)
-  const heads = data.customAccountHeads || []
-  // No duplicates (case-insensitive)
-  if (heads.some(h => h.toLowerCase() === trimmed.toLowerCase())) return
-  data.customAccountHeads = [...heads, trimmed]
-  saveCompanyData(companyId, data)
-}
-
-export function renameCustomHead(companyId, oldHead, newHead) {
-  const trimmed = (newHead || '').trim()
-  if (!trimmed) return
-  const data = loadCompanyData(companyId)
-  const heads = data.customAccountHeads || []
-  data.customAccountHeads = heads.map(h => h === oldHead ? trimmed : h)
-  // Also update any transactions already tagged with the old head
-  data.bankTransactions = (data.bankTransactions || []).map(t =>
-    t.ai_suggested_account === oldHead ? { ...t, ai_suggested_account: trimmed } : t
+      {/* Delete confirm modal */}
+      {delId && (
+        <div className="overlay" onClick={() => setDelId(null)}>
+          <div className="modal" style={{ maxWidth: 380 }} onClick={e => e.stopPropagation()}>
+            <div className="modal-head">
+              <span className="modal-title" style={{ color: 'var(--danger)' }}>
+                <AlertTriangle size={16} style={{ display: 'inline', marginRight: 6 }} />
+                Delete Company
+              </span>
+              <button className="btn btn-ghost btn-icon" onClick={() => setDelId(null)}><X size={17} /></button>
+            </div>
+            <div className="modal-body">
+              <p style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-2)', lineHeight: 1.6 }}>
+                Are you sure you want to remove <strong>{companies.find(c => c.id === delId)?.name}</strong>?
+                All accounting data will be preserved and can be re-added later.
+              </p>
+            </div>
+            <div className="modal-foot">
+              <button className="btn btn-secondary" onClick={() => setDelId(null)}>Cancel</button>
+              <button className="btn btn-danger" onClick={() => handleDelete(delId)}><Trash2 size={14} /> Yes, Remove</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   )
-  saveCompanyData(companyId, data)
-}
-
-export function deleteCustomHead(companyId, head) {
-  const data = loadCompanyData(companyId)
-  const heads = data.customAccountHeads || []
-  data.customAccountHeads = heads.filter(h => h !== head)
-  saveCompanyData(companyId, data)
 }
