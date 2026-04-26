@@ -18,46 +18,11 @@ const FY_OPTIONS = Array.from({ length: 12 }, (_, i) => {
   return `${start}-${end}`
 }).reverse()
 
-export default function Companies() {
-  const { companies, activeCompany, switchCompany, addCompany, updateCompany, deleteCompany } = useAuth()
-  const [showAdd,  setShowAdd]  = useState(false)
-  const [editId,   setEditId]   = useState(null)
-  const [delId,    setDelId]    = useState(null)
-  const [form, setForm] = useState({ name: '', type: 'Private Limited', gstin: '', fy: '2025-26', color: COLORS[0] })
-
-  const openEdit = (co) => {
-    // Strip "FY " prefix for the select value
-    const fyRaw = co.fy?.replace('FY ', '') || '2025-26'
-    setForm({ name: co.name, type: co.type, gstin: co.gstin || '', fy: fyRaw, color: co.color })
-    setEditId(co.id)
-  }
-
-  const handleAdd = () => {
-    if (!form.name.trim()) return toast.error('Company name is required')
-    addCompany(form)
-    setShowAdd(false)
-    setForm({ name: '', type: 'Private Limited', gstin: '', fy: '2025-26', color: COLORS[0] })
-    toast.success('Company added successfully')
-  }
-
-  const handleEdit = () => {
-    if (!form.name.trim()) return toast.error('Company name is required')
-    updateCompany(editId, {
-      ...form,
-      initials: form.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase(),
-    })
-    setEditId(null)
-    toast.success('Company updated')
-  }
-
-  const handleDelete = (id) => {
-    if (companies.length === 1) return toast.error('You must have at least one company')
-    deleteCompany(id)
-    setDelId(null)
-    toast.success('Company removed')
-  }
-
-  const FormModal = ({ title, onSave, onClose }) => (
+// FormModal is defined OUTSIDE Companies so React never remounts it on re-render.
+// Defining a component inside another component causes React to treat it as a new
+// type on every render → full unmount/remount → input flicker + lost focus.
+function FormModal({ title, onSave, onClose, form, setForm }) {
+  return (
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
         <div className="modal-head">
@@ -120,6 +85,45 @@ export default function Companies() {
       </div>
     </div>
   )
+}
+
+export default function Companies() {
+  const { companies, activeCompany, switchCompany, addCompany, updateCompany, deleteCompany } = useAuth()
+  const [showAdd,  setShowAdd]  = useState(false)
+  const [editId,   setEditId]   = useState(null)
+  const [delId,    setDelId]    = useState(null)
+  const [form, setForm] = useState({ name: '', type: 'Private Limited', gstin: '', fy: '2025-26', color: COLORS[0] })
+
+  const openEdit = (co) => {
+    const fyRaw = co.fy?.replace('FY ', '') || '2025-26'
+    setForm({ name: co.name, type: co.type, gstin: co.gstin || '', fy: fyRaw, color: co.color })
+    setEditId(co.id)
+  }
+
+  const handleAdd = () => {
+    if (!form.name.trim()) return toast.error('Company name is required')
+    addCompany(form)
+    setShowAdd(false)
+    setForm({ name: '', type: 'Private Limited', gstin: '', fy: '2025-26', color: COLORS[0] })
+    toast.success('Company added successfully')
+  }
+
+  const handleEdit = () => {
+    if (!form.name.trim()) return toast.error('Company name is required')
+    updateCompany(editId, {
+      ...form,
+      initials: form.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase(),
+    })
+    setEditId(null)
+    toast.success('Company updated')
+  }
+
+  const handleDelete = (id) => {
+    if (companies.length === 1) return toast.error('You must have at least one company')
+    deleteCompany(id)
+    setDelId(null)
+    toast.success('Company removed')
+  }
 
   return (
     <div className="page-wrap page-enter">
@@ -213,10 +217,10 @@ export default function Companies() {
       </div>
 
       {/* Add Modal */}
-      {showAdd && <FormModal title="Add New Company" onSave={handleAdd} onClose={() => setShowAdd(false)} />}
+      {showAdd && <FormModal title="Add New Company" onSave={handleAdd} onClose={() => setShowAdd(false)} form={form} setForm={setForm} />}
 
       {/* Edit Modal */}
-      {editId && <FormModal title="Edit Company" onSave={handleEdit} onClose={() => setEditId(null)} />}
+      {editId && <FormModal title="Edit Company" onSave={handleEdit} onClose={() => setEditId(null)} form={form} setForm={setForm} />}
 
       {/* Delete confirm modal */}
       {delId && (
