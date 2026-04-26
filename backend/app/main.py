@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     razorpay_secret:   str = ""
     anthropic_api_key: str = ""
     environment:       str = "development"
-    frontend_url:      str = "http://localhost:3000"
+    frontend_url:      str = "https://frontendaiaccounting.onrender.com"
 
     class Config:
         env_file = ".env"
@@ -131,7 +131,8 @@ app.include_router(simple_router)   # ← FIX: was missing → caused all /api/v
 _allowed_origins = list(set(filter(None, [
     "http://localhost:3000",
     "http://localhost:5173",
-    settings.frontend_url,
+    "https://frontendaiaccounting.onrender.com",   # ← production frontend on Render
+    settings.frontend_url,                          # ← also read from FRONTEND_URL env var
 ])))
 
 app.add_middleware(
