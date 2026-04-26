@@ -10,7 +10,8 @@ import { useSearchParams } from 'react-router-dom'
 import {
   Upload, CheckCircle, X, Zap, RefreshCw, FileText,
   CreditCard, Brain, Download, Search,
-  Filter, Edit3, Trash2, ArrowUpCircle, ArrowDownCircle, AlertCircle
+  Filter, Edit3, Trash2, ArrowUpCircle, ArrowDownCircle, AlertCircle,
+  Plus, Eye, Users, Hash, CreditCard as CardIcon, ChevronRight
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { loadCompanyData, addBankTransactions, updateBankTransaction, clearBankTransactions } from '../api/companyStore'
@@ -395,6 +396,61 @@ function classifyAll(txns) {
 }
 
 // ════════════════════════════════════════════════════════════════════
+// SIMILARITY ENGINE  — finds transactions that look like the given one
+// Checks: payment mode, party name keywords, amount proximity
+// ════════════════════════════════════════════════════════════════════
+function extractPaymentMode(narration) {
+  const u = (narration || '').toUpperCase()
+  if (u.includes('UPI'))                      return 'UPI'
+  if (u.includes('NEFT'))                     return 'NEFT'
+  if (u.includes('IMPS'))                     return 'IMPS'
+  if (u.includes('RTGS'))                     return 'RTGS'
+  if (u.includes('DEBIT CARD') || u.includes('OTHPG') || u.includes('BY DEBIT CARD')) return 'CARD'
+  if (u.includes('ATM'))                      return 'ATM'
+  if (u.includes('CASH'))                     return 'CASH'
+  if (u.includes('CHEQUE') || u.includes('CHQ')) return 'CHEQUE'
+  return 'OTHER'
+}
+
+function extractKeywords(narration) {
+  return (narration || '').toUpperCase()
+    .replace(/[^A-Z0-9 ]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length > 3 && !['WITH','FROM','NEFT','IMPS','RTGS','CARD','BANK','TRANS','TRANSFER','DEBIT','CREDIT'].includes(w))
+}
+
+function similarityScore(a, b) {
+  if (a.txn_type !== b.txn_type) return 0
+
+  let score = 0
+
+  // Amount: exact match = 50pts, within 2% = 30pts, within 10% = 15pts
+  const amtDiff = Math.abs(a.amount - b.amount) / Math.max(a.amount, 1)
+  if (amtDiff === 0)       score += 50
+  else if (amtDiff < 0.02) score += 30
+  else if (amtDiff < 0.10) score += 15
+
+  // Payment mode match = 25pts
+  if (extractPaymentMode(a.narration) === extractPaymentMode(b.narration)) score += 25
+
+  // Shared keywords
+  const kA = extractKeywords(a.narration)
+  const kB = extractKeywords(b.narration)
+  const shared = kA.filter(w => kB.includes(w)).length
+  score += Math.min(shared * 10, 30)
+
+  return score
+}
+
+function findSimilarUnmatched(transactions, targetTxn) {
+  return transactions.filter(t => {
+    if (t.id === targetTxn.id) return false
+    if (t.status !== 'unmatched') return false
+    return similarityScore(t, targetTxn) >= 50   // threshold
+  })
+}
+
+// ════════════════════════════════════════════════════════════════════
 // UI HELPERS
 // ════════════════════════════════════════════════════════════════════
 const statusBadge = { matched:'badge-green', manually_matched:'badge-green', unmatched:'badge-amber', ignored:'badge-gray' }
@@ -406,6 +462,7 @@ const ACCOUNT_OPTIONS = [
   'Insurance Premium','Interest Income','Interest Expense','ATM Cash Withdrawal',
   'Government Fees','Repairs & Maintenance','Miscellaneous Income','Miscellaneous Expense',
 ]
+const CUSTOM_SENTINEL = '__CUSTOM__'
 
 const ConfBar = ({ value, color }) => (
   <div style={{ display:'flex', alignItems:'center', gap:6 }}>
@@ -438,6 +495,10 @@ export default function Bank() {
   const [parseProgress,setParseProgress]= useState(0)
   const [editingId,    setEditingId]    = useState(null)
   const [editAccount,  setEditAccount]  = useState('')
+  const [customAccount,setCustomAccount]= useState('')   // for "add own head"
+  const [showCustom,   setShowCustom]   = useState(false)
+  const [selectedTxn,  setSelectedTxn]  = useState(null) // detail modal
+  const [similarApplied,setSimilarApplied]=useState(null) // {count, account}
   const [sortBy,       setSortBy]       = useState('date_desc')
   const [showFilters,  setShowFilters]  = useState(false)
   const [dateFrom,     setDateFrom]     = useState('')
@@ -531,12 +592,57 @@ export default function Bank() {
     toast.success(count > 0 ? `Auto-reconciled ${count} transactions ✓` : 'No high-confidence transactions to auto-reconcile')
   }
 
-  const acceptMatch = (id) => { updateBankTransaction(activeCompany?.id, id, { status:'matched' }); loadTxns(); toast.success('Transaction matched ✓') }
-  const acceptMatchWithAccount = (id, account) => { updateBankTransaction(activeCompany?.id, id, { status:'matched', ai_suggested_account:account }); loadTxns(); setEditingId(null); toast.success('Transaction matched ✓') }
+  const acceptMatch = (id) => {
+    const txn = transactions.find(t => t.id === id)
+    updateBankTransaction(activeCompany?.id, id, { status:'matched' })
+    // auto-apply to similar
+    if (txn) {
+      const similars = findSimilarUnmatched(transactions, txn)
+      similars.forEach(s => updateBankTransaction(activeCompany?.id, s.id, { status:'matched', ai_suggested_account: txn.ai_suggested_account }))
+      if (similars.length > 0) setSimilarApplied({ count: similars.length, account: txn.ai_suggested_account })
+    }
+    loadTxns()
+    toast.success('Transaction matched ✓')
+  }
+
+  const acceptMatchWithAccount = (id, account) => {
+    const resolvedAccount = (account === CUSTOM_SENTINEL || !account) ? customAccount : account
+    if (!resolvedAccount.trim()) return toast.error('Please enter an account name')
+    const txn = transactions.find(t => t.id === id)
+    updateBankTransaction(activeCompany?.id, id, { status:'matched', ai_suggested_account: resolvedAccount })
+    // auto-apply to similar
+    if (txn) {
+      const similars = findSimilarUnmatched(transactions, txn)
+      similars.forEach(s => updateBankTransaction(activeCompany?.id, s.id, { status:'matched', ai_suggested_account: resolvedAccount }))
+      if (similars.length > 0) setSimilarApplied({ count: similars.length, account: resolvedAccount })
+    }
+    loadTxns()
+    setEditingId(null)
+    setShowCustom(false)
+    setCustomAccount('')
+    toast.success('Transaction matched ✓')
+  }
   const ignoreTransaction   = (id) => { updateBankTransaction(activeCompany?.id, id, { status:'ignored' });   loadTxns(); toast('Transaction ignored', { icon:'🔕' }) }
   const unignoreTransaction = (id) => { updateBankTransaction(activeCompany?.id, id, { status:'unmatched' }); loadTxns() }
   const unmatchTransaction  = (id) => { updateBankTransaction(activeCompany?.id, id, { status:'unmatched' }); loadTxns() }
   const handleClearAll      = () => { if (!window.confirm('Clear all imported transactions?')) return; clearBankTransactions(activeCompany?.id); loadTxns(); toast.success('All transactions cleared') }
+
+  const openTxnDetail  = (txn) => setSelectedTxn(txn)
+  const closeDetail    = ()    => setSelectedTxn(null)
+  const startEditing   = (txn) => {
+    setEditingId(txn.id)
+    setShowCustom(false)
+    setCustomAccount('')
+    const suggested = txn.ai_suggested_account || ACCOUNT_OPTIONS[0]
+    setEditAccount(ACCOUNT_OPTIONS.includes(suggested) ? suggested : CUSTOM_SENTINEL)
+    if (!ACCOUNT_OPTIONS.includes(suggested)) { setShowCustom(true); setCustomAccount(suggested) }
+  }
+
+  const handleSelectChange = (val) => {
+    setEditAccount(val)
+    setShowCustom(val === CUSTOM_SENTINEL)
+    if (val !== CUSTOM_SENTINEL) setCustomAccount('')
+  }
 
   const handleExportCSV = () => {
     const rows = [
@@ -819,17 +925,19 @@ export default function Bank() {
                 background: txn.status==='unmatched' ? '#FFFBEB' : txn.status==='ignored' ? 'var(--surface-2)' : 'var(--surface)',
                 opacity: txn.status==='ignored' ? 0.65 : 1 }}>
                 <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', marginBottom:6 }}>
-                  <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ fontWeight:600, fontSize:'0.875rem', marginBottom:2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                  <div style={{ flex:1, minWidth:0, cursor:'pointer' }} onClick={() => openTxnDetail(txn)}>
+                    <div style={{ fontWeight:600, fontSize:'0.875rem', marginBottom:2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', display:'flex', alignItems:'center', gap:5 }}>
                       {txn.txn_type === 'credit'
-                        ? <ArrowDownCircle size={12} style={{ display:'inline', color:'var(--success)', marginRight:5 }} />
-                        : <ArrowUpCircle size={12} style={{ display:'inline', color:'var(--danger)', marginRight:5 }} />}
-                      {txn.narration}
+                        ? <ArrowDownCircle size={12} style={{ display:'inline', color:'var(--success)', flexShrink:0 }} />
+                        : <ArrowUpCircle size={12} style={{ display:'inline', color:'var(--danger)', flexShrink:0 }} />}
+                      <span style={{ flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{txn.narration}</span>
+                      <ChevronRight size={11} style={{ color:'var(--text-3)', flexShrink:0 }} />
                     </div>
                     <div style={{ fontSize:'0.75rem', color:'var(--text-3)', display:'flex', gap:8 }}>
                       <span>{fmtDate(txn.txn_date)}</span>
                       {txn.reference && <span>Ref: {txn.reference}</span>}
                       {txn.balance > 0 && <span>Bal: ₹{fmt(txn.balance)}</span>}
+                      <span style={{ background:'var(--border)', borderRadius:4, padding:'0 5px', fontSize:'0.68rem', letterSpacing:'0.03em' }}>{extractPaymentMode(txn.narration)}</span>
                     </div>
                   </div>
                   <div style={{ textAlign:'right', marginLeft:12 }}>
@@ -843,13 +951,38 @@ export default function Bank() {
                 {txn.status === 'unmatched' && (
                   <div style={{ background:'var(--primary-light)', border:'1px solid #C7D2FE', borderRadius:'var(--radius)', padding:'9px 12px' }}>
                     {editingId === txn.id ? (
-                      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                        <select value={editAccount} onChange={e => setEditAccount(e.target.value)}
-                          style={{ flex:1, height:30, border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:'0.8rem', background:'var(--bg)', color:'var(--text)', padding:'0 6px' }}>
-                          {ACCOUNT_OPTIONS.map(a => <option key={a}>{a}</option>)}
-                        </select>
-                        <button className="btn btn-sm" style={{ background:'var(--success)', color:'white' }} onClick={() => acceptMatchWithAccount(txn.id, editAccount)}><CheckCircle size={12}/> Save</button>
-                        <button className="btn btn-ghost btn-sm" onClick={() => setEditingId(null)}>Cancel</button>
+                      <div>
+                        <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom: showCustom ? 8 : 0 }}>
+                          <select value={editAccount} onChange={e => handleSelectChange(e.target.value)}
+                            style={{ flex:1, height:30, border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:'0.8rem', background:'var(--bg)', color:'var(--text)', padding:'0 6px' }}>
+                            {ACCOUNT_OPTIONS.map(a => <option key={a} value={a}>{a}</option>)}
+                            <option value={CUSTOM_SENTINEL}>➕ Add Custom Head…</option>
+                          </select>
+                          {!showCustom && (
+                            <>
+                              <button className="btn btn-sm" style={{ background:'var(--success)', color:'white' }} onClick={() => acceptMatchWithAccount(txn.id, editAccount)}><CheckCircle size={12}/> Save</button>
+                              <button className="btn btn-ghost btn-sm" onClick={() => { setEditingId(null); setShowCustom(false); setCustomAccount('') }}>Cancel</button>
+                            </>
+                          )}
+                        </div>
+                        {showCustom && (
+                          <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                            <input autoFocus value={customAccount} onChange={e => setCustomAccount(e.target.value)}
+                              placeholder="Type your custom account head…"
+                              style={{ flex:1, height:30, border:'1px solid var(--primary)', borderRadius:'var(--radius)', fontSize:'0.8rem', background:'var(--bg)', color:'var(--text)', padding:'0 8px' }} />
+                            <button className="btn btn-sm" style={{ background:'var(--success)', color:'white' }} onClick={() => acceptMatchWithAccount(txn.id, CUSTOM_SENTINEL)}><CheckCircle size={12}/> Save</button>
+                            <button className="btn btn-ghost btn-sm" onClick={() => { setEditingId(null); setShowCustom(false); setCustomAccount('') }}>Cancel</button>
+                          </div>
+                        )}
+                        {/* Similarity preview */}
+                        {(() => {
+                          const sims = findSimilarUnmatched(transactions, txn)
+                          return sims.length > 0 ? (
+                            <div style={{ marginTop:8, fontSize:'0.72rem', color:'var(--primary)', display:'flex', alignItems:'center', gap:5, padding:'4px 8px', background:'#EEF2FF', borderRadius:6 }}>
+                              <Users size={10}/> Saving will also match {sims.length} similar transaction{sims.length > 1 ? 's' : ''} automatically
+                            </div>
+                          ) : null
+                        })()}
                       </div>
                     ) : (
                       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10 }}>
@@ -863,7 +996,7 @@ export default function Bank() {
                         </div>
                         <div style={{ display:'flex', gap:5 }}>
                           <button className="btn btn-sm" style={{ background:'var(--success)', color:'white' }} onClick={() => acceptMatch(txn.id)}><CheckCircle size={12}/> Accept</button>
-                          <button className="btn btn-ghost btn-sm" onClick={() => { setEditingId(txn.id); setEditAccount(txn.ai_suggested_account || ACCOUNT_OPTIONS[0]) }}><Edit3 size={12}/></button>
+                          <button className="btn btn-ghost btn-sm" onClick={() => startEditing(txn)}><Edit3 size={12}/></button>
                           <button className="btn btn-ghost btn-sm" onClick={() => ignoreTransaction(txn.id)}><X size={12}/></button>
                         </div>
                       </div>
@@ -898,6 +1031,101 @@ export default function Bank() {
         </div>
       </div>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+
+      {/* ── TRANSACTION DETAIL MODAL ──────────────────────────────── */}
+      {selectedTxn && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.45)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }} onClick={closeDetail}>
+          <div style={{ background:'var(--surface)', borderRadius:16, padding:0, width:'100%', maxWidth:520, boxShadow:'0 24px 80px rgba(0,0,0,0.22)', overflow:'hidden' }} onClick={e => e.stopPropagation()}>
+            {/* Header */}
+            <div style={{ padding:'18px 22px', borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'space-between',
+              background: selectedTxn.txn_type === 'credit' ? 'linear-gradient(135deg,#ECFDF5,#F0FDF4)' : 'linear-gradient(135deg,#FEF2F2,#FFF1F2)' }}>
+              <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                {selectedTxn.txn_type === 'credit'
+                  ? <ArrowDownCircle size={22} color="var(--success)" />
+                  : <ArrowUpCircle size={22} color="var(--danger)" />}
+                <div>
+                  <div style={{ fontWeight:700, fontSize:'1rem', color:'var(--text)' }}>Transaction Details</div>
+                  <div style={{ fontSize:'0.75rem', color:'var(--text-3)' }}>{fmtDate(selectedTxn.txn_date)}</div>
+                </div>
+              </div>
+              <button onClick={closeDetail} style={{ background:'none', border:'none', cursor:'pointer', color:'var(--text-3)', padding:4 }}><X size={18}/></button>
+            </div>
+
+            {/* Amount hero */}
+            <div style={{ padding:'22px 22px 16px', textAlign:'center', borderBottom:'1px solid var(--border)' }}>
+              <div style={{ fontSize:'2rem', fontWeight:800, fontFamily:'var(--font-mono)', color: selectedTxn.txn_type==='credit' ? 'var(--success)' : 'var(--danger)' }}>
+                {selectedTxn.txn_type === 'credit' ? '+' : '−'}₹{fmt(selectedTxn.amount)}
+              </div>
+              <span className={`badge ${statusBadge[selectedTxn.status]||'badge-gray'}`} style={{ marginTop:6, fontSize:'0.78rem', padding:'4px 12px' }}>
+                {(selectedTxn.status||'').replace('_',' ')}
+              </span>
+            </div>
+
+            {/* Details grid */}
+            <div style={{ padding:'16px 22px', display:'grid', gridTemplateColumns:'1fr 1fr', gap:'12px 24px' }}>
+              {[
+                { icon: '📝', label:'Full Narration',    value: selectedTxn.narration,                              colSpan:2 },
+                { icon: '📅', label:'Date',              value: fmtDate(selectedTxn.txn_date) },
+                { icon: '💳', label:'Payment Mode',      value: extractPaymentMode(selectedTxn.narration) },
+                { icon: '🔢', label:'Reference / Cheque',value: selectedTxn.reference || '—' },
+                { icon: '💰', label:'Balance After',     value: selectedTxn.balance > 0 ? `₹${fmt(selectedTxn.balance)}` : '—' },
+                { icon: '🏷️', label:'Account Category',  value: selectedTxn.ai_suggested_account || '—' },
+                { icon: '🤖', label:'AI Confidence',     value: selectedTxn.confidence ? `${(selectedTxn.confidence*100).toFixed(0)}%` : '—' },
+              ].map(({ icon, label, value, colSpan }) => (
+                <div key={label} style={{ gridColumn: colSpan ? `span ${colSpan}` : undefined, background:'var(--surface-2)', borderRadius:8, padding:'10px 12px' }}>
+                  <div style={{ fontSize:'0.7rem', color:'var(--text-3)', marginBottom:4 }}>{icon} {label}</div>
+                  <div style={{ fontSize:'0.85rem', fontWeight:600, color:'var(--text)', wordBreak:'break-all' }}>{value}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Similar transactions count */}
+            {(() => {
+              const sims = findSimilarUnmatched(transactions, selectedTxn)
+              return sims.length > 0 ? (
+                <div style={{ margin:'0 22px 16px', padding:'10px 14px', background:'#EEF2FF', borderRadius:8, display:'flex', alignItems:'center', gap:8, fontSize:'0.8rem', color:'var(--primary)' }}>
+                  <Users size={14}/> <strong>{sims.length}</strong> similar unmatched transaction{sims.length>1?'s':''} found — accepting this will auto-match them too
+                </div>
+              ) : null
+            })()}
+
+            {/* Actions */}
+            <div style={{ padding:'0 22px 20px', display:'flex', gap:8, justifyContent:'flex-end' }}>
+              {selectedTxn.status === 'unmatched' && (
+                <>
+                  <button className="btn btn-sm" style={{ background:'var(--success)', color:'white' }}
+                    onClick={() => { acceptMatch(selectedTxn.id); closeDetail() }}>
+                    <CheckCircle size={13}/> Accept & Match
+                  </button>
+                  <button className="btn btn-ghost btn-sm"
+                    onClick={() => { startEditing(selectedTxn); closeDetail() }}>
+                    <Edit3 size={13}/> Edit Category
+                  </button>
+                  <button className="btn btn-ghost btn-sm"
+                    onClick={() => { ignoreTransaction(selectedTxn.id); closeDetail() }}>
+                    <X size={13}/> Ignore
+                  </button>
+                </>
+              )}
+              {(selectedTxn.status === 'matched' || selectedTxn.status === 'manually_matched') && (
+                <button className="btn btn-ghost btn-sm" onClick={() => { unmatchTransaction(selectedTxn.id); closeDetail() }}>Undo Match</button>
+              )}
+              <button className="btn btn-secondary btn-sm" onClick={closeDetail}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── SIMILAR AUTO-APPLY BANNER ─────────────────────────────── */}
+      {similarApplied && (
+        <div style={{ position:'fixed', bottom:28, left:'50%', transform:'translateX(-50%)', zIndex:999,
+          background:'var(--primary)', color:'white', borderRadius:12, padding:'14px 22px',
+          boxShadow:'0 8px 32px rgba(79,70,229,0.35)', display:'flex', alignItems:'center', gap:12, fontSize:'0.88rem', maxWidth:420 }}>
+          <Users size={16}/>
+          <span>Auto-matched <strong>{similarApplied.count}</strong> similar transaction{similarApplied.count>1?'s':''} → <strong>{similarApplied.account}</strong></span>
+          <button onClick={() => setSimilarApplied(null)} style={{ background:'rgba(255,255,255,0.2)', border:'none', cursor:'pointer', color:'white', borderRadius:6, padding:'2px 8px', fontSize:'0.78rem' }}>✕</button>
+        </div>
+      )}
     </div>
   )
 }
