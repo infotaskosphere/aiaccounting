@@ -1,7 +1,8 @@
 """
 Auth Module — JWT + bcrypt
 Exports: create_token, verify_password, hash_password,
-         get_current_user, get_company_id, require_role
+         get_current_user, get_company_id, require_role,
+         CurrentUser, decode_token
 """
 from __future__ import annotations
 import os
@@ -12,13 +13,44 @@ from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import bcrypt
 import jwt
-import asyncpg
 
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-production-please")
 ALGORITHM  = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "480"))
 
 bearer_scheme = HTTPBearer()
+
+
+# ─── CurrentUser dataclass ────────────────────────────────────────────────────
+
+class CurrentUser:
+    """
+    Returned by deps.get_current_user (simple_mode / deps.py path).
+    Attribute access: user.company_id, user.role, etc.
+    """
+    def __init__(self, user_id, company_id, role: str, name: str = "", email: str = ""):
+        self.user_id    = user_id
+        self.company_id = company_id
+        self.role       = role
+        self.name       = name
+        self.email      = email
+
+    # Dict-style access so main.py's user["sub"], user["company_id"] also work
+    def __getitem__(self, key: str):
+        mapping = {
+            "sub":        str(self.user_id),
+            "company_id": str(self.company_id),
+            "role":       self.role,
+            "name":       self.name,
+            "email":      self.email,
+        }
+        return mapping[key]
+
+    def get(self, key: str, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
 
 
 # ─── Password ─────────────────────────────────────────────────────────────────
@@ -62,28 +94,35 @@ def decode_token(token: str) -> dict:
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
-) -> dict:
+) -> CurrentUser:
     """
-    Returns the JWT payload as a plain dict so callers can use
-    user["sub"], user["company_id"], user["role"] etc.
+    Decodes JWT and returns a CurrentUser.
+    Supports both attribute access (user.company_id) and
+    dict-style access (user["company_id"]) used in main.py.
     """
-    return decode_token(credentials.credentials)
+    payload = decode_token(credentials.credentials)
+    return CurrentUser(
+        user_id    = payload.get("sub"),
+        company_id = payload.get("company_id"),
+        role       = payload.get("role", ""),
+        name       = payload.get("name", ""),
+        email      = payload.get("email", ""),
+    )
 
 
 async def get_company_id(
-    user: dict = Depends(get_current_user),
+    user: CurrentUser = Depends(get_current_user),
 ) -> str:
     """Convenience dep: extract company_id directly from the token."""
-    company_id = user.get("company_id")
-    if not company_id:
+    if not user.company_id:
         raise HTTPException(status_code=401, detail="company_id missing in token")
-    return company_id
+    return str(user.company_id)
 
 
 def require_role(*roles: str):
     """Dependency factory: require one of the given roles."""
-    async def checker(user: dict = Depends(get_current_user)) -> dict:
-        if user.get("role") not in roles:
+    async def checker(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+        if user.role not in roles:
             raise HTTPException(status_code=403, detail="Insufficient permissions")
         return user
     return checker
