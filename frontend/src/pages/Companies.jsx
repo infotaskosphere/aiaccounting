@@ -154,6 +154,11 @@ export default function Companies() {
             )}
             <div className="co-card-av" style={{ background: co.color }}>{co.initials}</div>
             <div className="co-card-name">{co.name}</div>
+            {co.legalName && co.legalName !== co.name && (
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-3)', marginTop: 2 }}>
+                {co.legalName}
+              </div>
+            )}
             <div className="co-card-type">{co.type}</div>
             {/* FY display */}
             <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', fontWeight: 600, marginTop: 4 }}>
