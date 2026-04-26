@@ -177,8 +177,8 @@ export default function Reconciliation() {
       </div>
 
       {apiError&&(
-        <div style={{marginBottom:12,padding:'8px 14px',background:'var(--warning-l)',borderRadius:8,border:'1px solid var(--warning-b)',fontSize:12,color:'var(--warning)',display:'flex',gap:8,alignItems:'center'}}>
-          <AlertTriangle size={13}/> Running in demo mode — showing sample data. Connect to backend to see live reconciliation.
+        <div style={{marginBottom:12,padding:'8px 14px',background:'var(--danger-l)',borderRadius:8,border:'1px solid var(--danger-b)',fontSize:12,color:'var(--danger)',display:'flex',gap:8,alignItems:'center'}}>
+          <AlertTriangle size={13}/> Unable to reach the backend API. Check that the backend service is running and CORS is configured correctly.
         </div>
       )}
 
