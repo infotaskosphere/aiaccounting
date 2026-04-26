@@ -1,46 +1,46 @@
-# requirements.txt (v2 — UPGRADED)
-# Core framework
-fastapi==0.111.1
-uvicorn[standard]==0.30.1
-pydantic==2.7.4
-pydantic-settings==2.3.4
+# ── Core ──────────────────────────────────────────────────────────────────────
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+pydantic-settings==2.5.2
+python-multipart==0.0.12
 
-# Database
+# ── Database ──────────────────────────────────────────────────────────────────
 asyncpg==0.29.0
+psycopg2-binary==2.9.9        # for sync migrations / scripts
 
-# Auth
-python-jose[cryptography]==3.3.0
-bcrypt==4.1.3
-passlib==1.7.4
+# ── Auth ──────────────────────────────────────────────────────────────────────
+PyJWT==2.9.0
+bcrypt==4.2.0
 
-# AI / NLP
-anthropic>=0.28.0          # Smart Assistant + AI summaries
-rapidfuzz==3.9.3           # Fuzzy matching for reconciliation
+# ── AI / Embeddings ───────────────────────────────────────────────────────────
+openai==1.51.2
+sentence-transformers==3.1.1
+torch==2.4.1                  # CPU build; use torch-cu121 for GPU
 numpy==1.26.4
+rapidfuzz==3.10.0
 
-# Optional: enable for full AI embeddings (requires ~400MB RAM)
-# sentence-transformers==3.0.1
+# ── PDF / OCR ─────────────────────────────────────────────────────────────────
+pdfplumber==0.11.4
+PyMuPDF==1.24.10              # fitz — for OCR-based PDF to image
+pytesseract==0.3.13
+Pillow==10.4.0
 
-# File parsing
-pdfplumber==0.11.4         # PDF bank statement parsing
-openpyxl==3.1.5            # Excel parsing
-python-multipart==0.0.9    # File upload support
+# ── Excel / CSV ───────────────────────────────────────────────────────────────
+openpyxl==3.1.5
+pandas==2.2.3
 
-# Optional: OCR for scanned PDFs (requires tesseract system binary)
-# pytesseract==0.3.13
-# pdf2image==1.17.0
-# Pillow==10.4.0
+# ── HTTP client ───────────────────────────────────────────────────────────────
+httpx==0.27.2
 
-# Observability
-structlog==24.2.0
+# ── Queue ─────────────────────────────────────────────────────────────────────
+celery==5.4.0
+redis==5.1.1
 
-# Compliance
-# (GST + Payroll logic is pure Python, no extra deps)
+# ── Anthropic (assistant) ─────────────────────────────────────────────────────
+anthropic==0.34.2
 
-# Testing
-pytest==8.3.2
-pytest-asyncio==0.23.8
-httpx==0.27.0              # For API integration tests
-
-# Linting (dev only)
-# ruff==0.5.0
+# ── Utilities ─────────────────────────────────────────────────────────────────
+python-dotenv==1.0.1
+tenacity==9.0.0
+lxml==5.3.0                   # Tally XML
