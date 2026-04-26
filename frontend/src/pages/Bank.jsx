@@ -136,7 +136,20 @@ export default function Bank() {
         throw new Error(detail)
       }
 
-      const result = await response.json()
+      // FIX: response.json() throws "Unexpected end of JSON input" when the
+      // server returns an empty body (pdfplumber crash, timeout, auth error).
+      // Parse safely so the outer catch gives a readable message.
+      let result
+      try {
+        result = await response.json()
+      } catch {
+        throw new Error(
+          'Server returned an unreadable response. Possible causes: ' +
+          '(1) pdfplumber not installed — add it to requirements-render.txt and redeploy, ' +
+          '(2) PDF is image-only/scanned — export as CSV from your bank instead, ' +
+          '(3) request timed out on Render free tier. Check Render logs for details.'
+        )
+      }
       const { transactions: parsed, total_parsed } = result.data
 
       setParseProgress(95)
