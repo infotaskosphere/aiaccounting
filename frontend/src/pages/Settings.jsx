@@ -1,29 +1,29 @@
 // src/pages/Settings.jsx — Full Settings for FINIX AI Accounting (India)
-// FIX: CompanySettings now reads from + writes to AuthContext (activeCompany / updateCompany)
-//      so changes are reflected immediately in Companies page, Topbar, etc.
-import { useState, useEffect } from 'react'
+// FEATURE: Smart Document Upload — upload GST Certificate (PDF) and/or MCA Master Data (XLSX/CSV)
+//          and all company profile fields are auto-filled from the documents.
+import { useState, useEffect, useRef } from 'react'
 import {
   Building2, Users, Shield, Bell, Palette, Database,
   Printer, Globe, Zap, FileText, IndianRupee, Receipt,
   Lock, Key, ChevronRight, Check,
   Save, AlertTriangle, Info, Upload, RefreshCw, Trash2,
-  Eye, EyeOff, Plus, Edit2, X
+  Eye, EyeOff, Plus, Edit2, X, Sparkles, FileCheck, FileScan
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useAuth } from '../context/AuthContext'
 
 const SIDEBAR = [
-  { key:'company',     label:'Company Profile',    icon:Building2,    desc:'GSTIN, PAN, CIN, address' },
-  { key:'users',       label:'Users & Roles',       icon:Users,        desc:'Manage team access' },
-  { key:'security',    label:'Security',            icon:Shield,       desc:'Password, 2FA, sessions' },
-  { key:'gst',         label:'GST & Tax',           icon:Receipt,      desc:'GST rates, HSN, TDS' },
-  { key:'payroll',     label:'Payroll & HR',        icon:IndianRupee,  desc:'PF, ESIC, TDS slabs' },
-  { key:'notifications',label:'Notifications',     icon:Bell,         desc:'Email, SMS, push alerts' },
-  { key:'appearance',  label:'Appearance',          icon:Palette,      desc:'Theme, language, date format' },
-  { key:'integrations',label:'Integrations',        icon:Globe,        desc:'Tally, Zoho, GSP, bank feeds' },
-  { key:'ai',          label:'AI & Automation',     icon:Zap,          desc:'Smart rules, auto-classify' },
-  { key:'data',        label:'Data & Backup',       icon:Database,     desc:'Export, backup, import' },
-  { key:'print',       label:'Print & Invoice',     icon:Printer,      desc:'Templates, e-invoice, e-way bill' },
+  { key:'company',      label:'Company Profile',   icon:Building2,   desc:'GSTIN, PAN, CIN, address' },
+  { key:'users',        label:'Users & Roles',      icon:Users,       desc:'Manage team access' },
+  { key:'security',     label:'Security',           icon:Shield,      desc:'Password, 2FA, sessions' },
+  { key:'gst',          label:'GST & Tax',          icon:Receipt,     desc:'GST rates, HSN, TDS' },
+  { key:'payroll',      label:'Payroll & HR',       icon:IndianRupee, desc:'PF, ESIC, TDS slabs' },
+  { key:'notifications',label:'Notifications',      icon:Bell,        desc:'Email, SMS, push alerts' },
+  { key:'appearance',   label:'Appearance',         icon:Palette,     desc:'Theme, language, date format' },
+  { key:'integrations', label:'Integrations',       icon:Globe,       desc:'Tally, Zoho, GSP, bank feeds' },
+  { key:'ai',           label:'AI & Automation',    icon:Zap,         desc:'Smart rules, auto-classify' },
+  { key:'data',         label:'Data & Backup',      icon:Database,    desc:'Export, backup, import' },
+  { key:'print',        label:'Print & Invoice',    icon:Printer,     desc:'Templates, e-invoice, e-way bill' },
 ]
 
 // ── Shared UI helpers ──────────────────────────────────────────
@@ -72,102 +72,677 @@ function Toggle2({ value, onChange, label }) {
   )
 }
 
-// ─── Company Profile — FIXED ───────────────────────────────────
-// Reads initial values from activeCompany (which is persisted in localStorage via AuthContext).
-// On Save, calls updateCompany() so Companies page, Topbar, and all other consumers
-// immediately reflect the changes.
+// ══════════════════════════════════════════════════════════════
+// DOCUMENT PARSERS — 100% client-side, no backend needed
+// ══════════════════════════════════════════════════════════════
+
+// ── Load PDF.js from CDN ──────────────────────────────────────
+const PDFJS_CDN    = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js'
+const PDFJS_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
+
+async function loadPDFJS() {
+  if (window.pdfjsLib) return window.pdfjsLib
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script')
+    s.src = PDFJS_CDN
+    s.onload = () => { window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER; resolve(window.pdfjsLib) }
+    s.onerror = () => reject(new Error('Failed to load PDF.js'))
+    document.head.appendChild(s)
+  })
+}
+
+async function extractPDFText(file) {
+  const buf     = await file.arrayBuffer()
+  const pdfjsLib = await loadPDFJS()
+  const pdf     = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise
+  let text = ''
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p)
+    const tc   = await page.getTextContent()
+    // Reconstruct rows by Y position so key–value pairs land on the same line
+    const byY  = {}
+    tc.items.forEach(item => {
+      const y = Math.round(item.transform[5])
+      if (!byY[y]) byY[y] = []
+      byY[y].push(item.str)
+    })
+    text += Object.keys(byY)
+      .sort((a, b) => b - a)
+      .map(y => byY[y].join(' '))
+      .join('\n') + '\n'
+  }
+  return text
+}
+
+// ── Load SheetJS from CDN ─────────────────────────────────────
+async function loadSheetJS() {
+  if (window.XLSX) return window.XLSX
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script')
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'
+    s.onload = () => resolve(window.XLSX)
+    s.onerror = () => reject(new Error('Failed to load SheetJS'))
+    document.head.appendChild(s)
+  })
+}
+
+async function extractXLSXData(file) {
+  const XLSX = await loadSheetJS()
+  const buf  = await file.arrayBuffer()
+  const wb   = XLSX.read(new Uint8Array(buf), { type: 'array' })
+  // Return all sheets as { sheetName: [[row], [row], ...] }
+  const result = {}
+  for (const name of wb.SheetNames) {
+    result[name] = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '' })
+  }
+  return result
+}
+
+// ── GST Certificate PDF parser ────────────────────────────────
+// Handles Form GST REG-06 (standard govt certificate)
+function parseGSTCertificate(text) {
+  const extracted = {}
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
+  const fullText = lines.join(' ')
+
+  // GSTIN — 15-char alphanumeric starting with 2-digit state code
+  const gstinMatch = fullText.match(/\b(\d{2}[A-Z]{5}\d{4}[A-Z]{1}\d{1}[Z]{1}[A-Z\d]{1})\b/)
+  if (gstinMatch) extracted.gstin = gstinMatch[1]
+
+  // Legal Name — line after "Legal Name" label
+  const legalIdx = lines.findIndex(l => /^legal\s*name$/i.test(l) || /^1\.\s*legal\s*name$/i.test(l))
+  if (legalIdx !== -1 && lines[legalIdx + 1]) {
+    // Skip if next line is just a label word
+    const candidate = lines[legalIdx + 1]
+    if (candidate.length > 5 && !/^trade\s*name/i.test(candidate)) {
+      extracted.legalName = candidate
+    }
+  }
+
+  // Trade Name
+  const tradeIdx = lines.findIndex(l => /^trade\s*name/i.test(l) || /^2\.\s*trade\s*name/i.test(l))
+  if (tradeIdx !== -1 && lines[tradeIdx + 1]) {
+    const candidate = lines[tradeIdx + 1]
+    if (candidate.length > 5 && !/^additional/i.test(candidate)) {
+      extracted.tradeName = candidate
+    }
+  }
+
+  // Fallback: look for "PRODIGIST" style name pattern anywhere in text
+  if (!extracted.legalName) {
+    const nameMatch = fullText.match(/([A-Z][A-Z\s]+(?:PRIVATE LIMITED|PVT\.?\s*LTD\.?|LLP|ENTERPRISES|INDUSTRIES|TRADERS|SOLUTIONS|SERVICES|TECHNOLOGIES|TECH|VENTURES))/)
+    if (nameMatch) extracted.legalName = nameMatch[1].trim()
+  }
+
+  // Constitution / Business Type
+  const constMatch = fullText.match(/constitution of business[:\s]+([^\n]+)/i)
+  if (constMatch) extracted.businessType = constMatch[1].trim()
+
+  // Address — line after "Address of Principal Place of Business"
+  const addrIdx = lines.findIndex(l => /address of principal place/i.test(l))
+  if (addrIdx !== -1) {
+    // Collect next 2-3 lines that look like address content
+    const addrLines = []
+    for (let i = addrIdx + 1; i < Math.min(addrIdx + 5, lines.length); i++) {
+      const l = lines[i]
+      if (/^date of|^period of|^type of|^\d+\./i.test(l)) break
+      addrLines.push(l)
+    }
+    const rawAddr = addrLines.join(' ').trim()
+    if (rawAddr.length > 10) {
+      // Try to extract city, state, pincode from the address
+      extracted.address = rawAddr
+
+      // Pincode — 6-digit number
+      const pinMatch = rawAddr.match(/\b(\d{6})\b/)
+      if (pinMatch) extracted.pincode = pinMatch[1]
+
+      // State — common Indian state names
+      const stateMatch = rawAddr.match(/\b(Gujarat|Maharashtra|Karnataka|Delhi|Tamil Nadu|Telangana|Rajasthan|Uttar Pradesh|Haryana|Punjab|West Bengal|Odisha|Kerala|Madhya Pradesh|Andhra Pradesh|Bihar|Assam|Jharkhand|Himachal Pradesh|Uttarakhand|Goa|Chhattisgarh|Manipur|Meghalaya|Mizoram|Nagaland|Sikkim|Tripura)\b/i)
+      if (stateMatch) extracted.state = stateMatch[1]
+
+      // City — word before state name or pincode
+      if (extracted.state) {
+        const beforeState = rawAddr.substring(0, rawAddr.toLowerCase().indexOf(extracted.state.toLowerCase())).trim()
+        const parts = beforeState.split(/[,\s]+/).filter(Boolean)
+        if (parts.length > 0) extracted.city = parts[parts.length - 1]
+      }
+    }
+  }
+
+  // Type of Registration
+  const regTypeMatch = fullText.match(/type of registration[:\s]+([^\n]+)/i)
+  if (regTypeMatch) extracted.gstRegType = regTypeMatch[1].trim()
+
+  // Date of registration / liability
+  const dateMatch = fullText.match(/(\d{2}\/\d{2}\/\d{4})/g)
+  if (dateMatch && dateMatch.length > 0) extracted.gstRegDate = dateMatch[0]
+
+  return extracted
+}
+
+// ── MCA Master Data XLSX parser ───────────────────────────────
+// Handles the standard MCA21 "Company Master Data" Excel export
+function parseMCAMasterData(sheets) {
+  const extracted = {}
+
+  // Sheet: MasterData (key-value pairs in col A = label, col B = value)
+  const masterSheet = sheets['MasterData'] || sheets['Master Data'] || sheets[Object.keys(sheets)[0]]
+  if (masterSheet) {
+    const kvMap = {}
+    for (const row of masterSheet) {
+      const key = String(row[0] || '').trim()
+      const val = String(row[1] || '').trim()
+      if (key && val && val !== 'None' && val !== '-') {
+        kvMap[key.toLowerCase()] = val
+      }
+    }
+
+    // CIN
+    extracted.cin = kvMap['cin'] || ''
+
+    // Company Name → both legal and trade name
+    const coName = kvMap['company name'] || ''
+    if (coName) { extracted.legalName = coName; extracted.tradeName = coName }
+
+    // Email — decode [dot] and [at] obfuscation used by MCA
+    const rawEmail = kvMap['email id'] || kvMap['email'] || ''
+    if (rawEmail) {
+      extracted.email = rawEmail
+        .replace(/\[dot\]/gi, '.')
+        .replace(/\[at\]/gi, '@')
+        .replace(/\s+/g, '')
+    }
+
+    // Registered Address
+    const rawAddr = kvMap['registered address'] || kvMap['address'] || ''
+    if (rawAddr && rawAddr !== '-') {
+      extracted.address = rawAddr
+
+      // Pincode
+      const pinMatch = rawAddr.match(/\b(\d{6})\b/)
+      if (pinMatch) extracted.pincode = pinMatch[1]
+
+      // State
+      const stateMatch = rawAddr.match(/\b(Gujarat|Maharashtra|Karnataka|Delhi|Tamil Nadu|Telangana|Rajasthan|Uttar Pradesh|Haryana|Punjab|West Bengal|Odisha|Kerala|Madhya Pradesh|Andhra Pradesh|Bihar|Assam|Jharkhand|Himachal Pradesh|Uttarakhand|Goa|Chhattisgarh)\b/i)
+      if (stateMatch) extracted.state = stateMatch[1]
+
+      // City — usually the last city-like word before state/pincode
+      const addrParts = rawAddr.split(',').map(p => p.trim())
+      // Find city: part that contains the state word, go one part before
+      if (extracted.state) {
+        const si = addrParts.findIndex(p => p.toLowerCase().includes(extracted.state.toLowerCase()))
+        if (si > 0) {
+          // Part before state may be "City, State" — take the city portion
+          const candidate = addrParts[si - 1]
+          extracted.city = candidate.split(/\s+/).pop() || candidate
+        }
+      }
+    }
+
+    // Date of Incorporation → use as company founding reference
+    extracted.dateOfIncorporation = kvMap['date of incorporation'] || ''
+
+    // Registration Number
+    extracted.regNo = kvMap['registration number'] || ''
+
+    // ROC
+    extracted.roc = kvMap['roc name'] || kvMap['roc (name and office)'] || ''
+
+    // Company Status
+    extracted.companyStatus = kvMap['company status'] || ''
+
+    // Capital
+    extracted.authorisedCapital = kvMap['authorised capital (rs)'] || kvMap['authorised capital'] || ''
+    extracted.paidUpCapital     = kvMap['paid up capital (rs)']     || kvMap['paid up capital']     || ''
+
+    // Classify business type for our dropdown
+    const classOfCo = (kvMap['class of company'] || '').toLowerCase()
+    const subCat    = (kvMap['subcategory of the company'] || '').toLowerCase()
+    if (classOfCo.includes('private')) extracted.businessType = 'Private Limited'
+    else if (classOfCo.includes('public')) extracted.businessType = 'Public Limited'
+    else if (subCat.includes('llp') || classOfCo.includes('llp')) extracted.businessType = 'LLP'
+    else extracted.businessType = 'Private Limited'
+  }
+
+  // Sheet: Director Details
+  const dirSheet = sheets['Director Details'] || sheets['Director details'] || sheets['Directors']
+  if (dirSheet) {
+    const directors = []
+    let headerFound = false
+    for (const row of dirSheet) {
+      const r0 = String(row[0] || '').toLowerCase()
+      if (r0.includes('sr') || r0.includes('din')) { headerFound = true; continue }
+      if (!headerFound) continue
+      const name = String(row[2] || '').trim()
+      const desig = String(row[3] || '').trim()
+      if (name && name.length > 2) {
+        directors.push({ name, designation: desig, din: String(row[1] || '').trim() })
+      }
+    }
+    if (directors.length > 0) extracted.directors = directors
+  }
+
+  return extracted
+}
+
+// ── Merge parsed data from multiple documents ─────────────────
+// GST certificate and MCA data may overlap; prefer the more specific/longer value
+function mergeExtracted(gstData, mcaData) {
+  const merged = {}
+  const allKeys = new Set([...Object.keys(gstData || {}), ...Object.keys(mcaData || {})])
+
+  for (const key of allKeys) {
+    const g = gstData?.[key]
+    const m = mcaData?.[key]
+    if (g && m) {
+      // Prefer longer / more complete value
+      merged[key] = String(g).length >= String(m).length ? g : m
+    } else {
+      merged[key] = g || m
+    }
+  }
+
+  return merged
+}
+
+// ── Map extracted data → Settings form fields ─────────────────
+function extractedToForm(extracted) {
+  const updates = {}
+  if (extracted.legalName) updates.legalName = extracted.legalName
+  if (extracted.tradeName)  updates.tradeName  = extracted.tradeName
+  if (extracted.gstin)      updates.gstin      = extracted.gstin
+  if (extracted.cin)        updates.cin        = extracted.cin
+  if (extracted.email)      updates.email      = extracted.email
+  if (extracted.address)    updates.address    = extracted.address
+  if (extracted.city)       updates.city       = extracted.city
+  if (extracted.state)      updates.state      = extracted.state
+  if (extracted.pincode)    updates.pincode    = extracted.pincode
+  if (extracted.phone)      updates.phone      = extracted.phone
+  if (extracted.website)    updates.website    = extracted.website
+  return updates
+}
+
+// ══════════════════════════════════════════════════════════════
+// SMART DOCUMENT UPLOAD COMPONENT
+// ══════════════════════════════════════════════════════════════
+function SmartDocUpload({ onExtracted }) {
+  const [files, setFiles]     = useState([])   // [{file, type, status, data}]
+  const [parsing, setParsing] = useState(false)
+  const [parsed, setParsed]   = useState(null) // final merged result
+  const inputRef              = useRef()
+
+  const FILE_TYPES = {
+    pdf:  { label:'GST Certificate', icon:'📄', color:'#DC2626', bg:'#FEF2F2', border:'#FECACA' },
+    xlsx: { label:'MCA Master Data', icon:'📊', color:'#059669', bg:'#ECFDF5', border:'#A7F3D0' },
+    xls:  { label:'MCA Master Data', icon:'📊', color:'#059669', bg:'#ECFDF5', border:'#A7F3D0' },
+    csv:  { label:'Company Data CSV', icon:'📋', color:'#7C3AED', bg:'#F5F3FF', border:'#DDD6FE' },
+  }
+
+  const detectFileType = (file) => {
+    const ext = file.name.split('.').pop().toLowerCase()
+    return FILE_TYPES[ext] || { label:'Unknown', icon:'📁', color:'#6B7280', bg:'#F9FAFB', border:'#E5E7EB' }
+  }
+
+  const handleFileDrop = (e) => {
+    e.preventDefault()
+    const dropped = Array.from(e.dataTransfer?.files || e.target.files || [])
+    addFiles(dropped)
+  }
+
+  const addFiles = (newFiles) => {
+    const toAdd = newFiles
+      .filter(f => /\.(pdf|xlsx|xls|csv)$/i.test(f.name))
+      .filter(f => !files.some(existing => existing.file.name === f.name))
+      .map(f => ({ file: f, type: detectFileType(f), status: 'ready', data: null }))
+
+    if (toAdd.length === 0) { toast.error('Please upload PDF, XLSX, XLS or CSV files'); return }
+    setFiles(prev => [...prev, ...toAdd])
+    setParsed(null)
+  }
+
+  const removeFile = (idx) => setFiles(prev => prev.filter((_, i) => i !== idx))
+
+  const parseAll = async () => {
+    if (files.length === 0) { toast.error('Please upload at least one document'); return }
+    setParsing(true)
+    setParsed(null)
+
+    let gstData = null
+    let mcaData = null
+    const updatedFiles = [...files]
+
+    for (let i = 0; i < files.length; i++) {
+      const { file } = files[i]
+      const ext = file.name.split('.').pop().toLowerCase()
+      updatedFiles[i] = { ...updatedFiles[i], status: 'parsing' }
+      setFiles([...updatedFiles])
+
+      try {
+        if (ext === 'pdf') {
+          const text = await extractPDFText(file)
+          gstData = parseGSTCertificate(text)
+          updatedFiles[i] = { ...updatedFiles[i], status: 'done', data: gstData }
+        } else if (ext === 'xlsx' || ext === 'xls') {
+          const sheets = await extractXLSXData(file)
+          mcaData = parseMCAMasterData(sheets)
+          updatedFiles[i] = { ...updatedFiles[i], status: 'done', data: mcaData }
+        } else if (ext === 'csv') {
+          // Treat as MCA data in CSV form: key,value rows
+          const text = await file.text()
+          const rows = text.split('\n').map(l => l.split(',').map(c => c.trim().replace(/^"|"$/g, '')))
+          mcaData = parseMCAMasterData({ MasterData: rows })
+          updatedFiles[i] = { ...updatedFiles[i], status: 'done', data: mcaData }
+        }
+      } catch (err) {
+        updatedFiles[i] = { ...updatedFiles[i], status: 'error' }
+        toast.error(`Failed to parse ${file.name}: ${err.message}`)
+      }
+    }
+
+    setFiles([...updatedFiles])
+    const merged = mergeExtracted(gstData, mcaData)
+    setParsed(merged)
+    setParsing(false)
+
+    const fieldCount = Object.keys(extractedToForm(merged)).length
+    if (fieldCount > 0) {
+      toast.success(`✅ Extracted ${fieldCount} fields from your document${files.length > 1 ? 's' : ''}!`)
+    } else {
+      toast.error('Could not extract data. Please check the document format.')
+    }
+  }
+
+  const handleApply = () => {
+    if (!parsed) return
+    const formUpdates = extractedToForm(parsed)
+    onExtracted(formUpdates, parsed)
+  }
+
+  const fieldCount = parsed ? Object.keys(extractedToForm(parsed)).length : 0
+
+  return (
+    <div style={{
+      marginBottom: 20,
+      background: 'linear-gradient(135deg, #EFF6FF, #F5F3FF)',
+      border: '1.5px dashed #93C5FD',
+      borderRadius: 12,
+      padding: '18px 20px',
+    }}>
+      {/* Header */}
+      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14 }}>
+        <div style={{ width:34, height:34, borderRadius:8, background:'var(--primary)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+          <FileScan size={18} color="white" />
+        </div>
+        <div>
+          <div style={{ fontWeight:700, fontSize:14, color:'var(--text)' }}>Auto-fill from Documents</div>
+          <div style={{ fontSize:11, color:'var(--text-3)' }}>Upload GST Certificate (PDF) and / or MCA Master Data (XLSX) — fields fill automatically</div>
+        </div>
+      </div>
+
+      {/* Drop Zone */}
+      <div
+        onDragOver={e => e.preventDefault()}
+        onDrop={handleFileDrop}
+        onClick={() => inputRef.current?.click()}
+        style={{
+          border: '2px dashed #BFDBFE',
+          borderRadius: 8,
+          padding: '16px',
+          textAlign: 'center',
+          cursor: 'pointer',
+          background: 'white',
+          transition: 'border-color 0.2s',
+          marginBottom: files.length > 0 ? 12 : 0,
+        }}
+      >
+        <input
+          ref={inputRef}
+          type="file"
+          multiple
+          accept=".pdf,.xlsx,.xls,.csv"
+          style={{ display:'none' }}
+          onChange={e => addFiles(Array.from(e.target.files))}
+        />
+        <Upload size={22} color="#93C5FD" style={{ margin:'0 auto 6px' }} />
+        <div style={{ fontSize:13, fontWeight:600, color:'var(--text-2)', marginBottom:2 }}>
+          Drop files here or click to browse
+        </div>
+        <div style={{ fontSize:11, color:'var(--text-3)' }}>
+          <strong>GST REG-06 Certificate</strong> (.pdf) · <strong>MCA Master Data</strong> (.xlsx / .xls) · Both together
+        </div>
+      </div>
+
+      {/* File list */}
+      {files.length > 0 && (
+        <div style={{ display:'flex', flexDirection:'column', gap:6, marginBottom:12 }}>
+          {files.map((f, i) => (
+            <div key={i} style={{
+              display:'flex', alignItems:'center', gap:10, padding:'9px 12px',
+              background: f.status === 'done' ? f.type.bg : f.status === 'error' ? '#FEF2F2' : 'white',
+              border: `1px solid ${f.status === 'done' ? f.type.border : f.status === 'error' ? '#FECACA' : '#E5E7EB'}`,
+              borderRadius: 8,
+            }}>
+              <span style={{ fontSize:20, flexShrink:0 }}>{f.type.icon}</span>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontWeight:600, fontSize:13, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', color: f.status === 'error' ? '#DC2626' : 'var(--text)' }}>
+                  {f.file.name}
+                </div>
+                <div style={{ fontSize:11, color:'var(--text-3)', display:'flex', gap:8 }}>
+                  <span style={{ color: f.type.color, fontWeight:600 }}>{f.type.label}</span>
+                  <span>{(f.file.size / 1024).toFixed(0)} KB</span>
+                  {f.status === 'done' && f.data && (
+                    <span style={{ color:'var(--success)', fontWeight:600 }}>
+                      ✓ {Object.keys(f.data).filter(k => f.data[k] && k !== 'directors').length} fields extracted
+                    </span>
+                  )}
+                  {f.status === 'parsing' && <span style={{ color:'var(--warning)', fontWeight:600 }}>⏳ Parsing…</span>}
+                  {f.status === 'error' && <span style={{ color:'#DC2626', fontWeight:600 }}>❌ Parse failed</span>}
+                </div>
+              </div>
+              {f.status !== 'parsing' && (
+                <button onClick={e => { e.stopPropagation(); removeFile(i) }}
+                  style={{ background:'none', border:'none', cursor:'pointer', color:'var(--text-3)', padding:4 }}>
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Action buttons */}
+      <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+        <button
+          onClick={parseAll}
+          disabled={files.length === 0 || parsing}
+          className="btn btn-primary"
+          style={{ display:'flex', alignItems:'center', gap:7, fontSize:13, padding:'7px 16px' }}
+        >
+          {parsing
+            ? <><span style={{ width:13, height:13, border:'2px solid rgba(255,255,255,0.3)', borderTopColor:'white', borderRadius:'50%', display:'inline-block', animation:'spin 0.7s linear infinite' }} /> Parsing…</>
+            : <><Sparkles size={14}/> Extract Data</>
+          }
+        </button>
+
+        {parsed && fieldCount > 0 && (
+          <button
+            onClick={handleApply}
+            className="btn btn-secondary"
+            style={{ display:'flex', alignItems:'center', gap:7, fontSize:13, padding:'7px 16px', background:'var(--success)', color:'white', border:'none' }}
+          >
+            <FileCheck size={14}/> Apply {fieldCount} Fields to Form
+          </button>
+        )}
+
+        {parsed && fieldCount === 0 && (
+          <div style={{ fontSize:12, color:'#DC2626', display:'flex', alignItems:'center', gap:5 }}>
+            <AlertTriangle size:13 /> No fields could be extracted from this document.
+          </div>
+        )}
+      </div>
+
+      {/* Extracted data preview */}
+      {parsed && fieldCount > 0 && (
+        <div style={{ marginTop:14, padding:'12px 14px', background:'white', borderRadius:8, border:'1px solid #BFDBFE' }}>
+          <div style={{ fontSize:11, fontWeight:700, color:'var(--primary)', marginBottom:10, textTransform:'uppercase', letterSpacing:'0.05em' }}>
+            Extracted Data Preview
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'6px 20px' }}>
+            {Object.entries(extractedToForm(parsed)).map(([key, val]) => (
+              <div key={key} style={{ fontSize:12 }}>
+                <span style={{ color:'var(--text-3)', fontWeight:600, textTransform:'capitalize' }}>
+                  {key.replace(/([A-Z])/g, ' $1').trim()}:&nbsp;
+                </span>
+                <span style={{ color:'var(--text)', fontWeight:500 }}>
+                  {String(val).length > 40 ? String(val).slice(0, 40) + '…' : String(val)}
+                </span>
+              </div>
+            ))}
+          </div>
+          {parsed.directors && parsed.directors.length > 0 && (
+            <div style={{ marginTop:8, paddingTop:8, borderTop:'1px solid #BFDBFE' }}>
+              <div style={{ fontSize:11, fontWeight:700, color:'var(--text-3)', marginBottom:4 }}>Directors</div>
+              {parsed.directors.map((d, i) => (
+                <div key={i} style={{ fontSize:12, color:'var(--text-2)', marginBottom:2 }}>
+                  {d.name} <span style={{ color:'var(--text-3)' }}>({d.designation})</span>
+                  {d.din && <span style={{ color:'var(--text-4)', fontSize:11, marginLeft:6 }}>DIN: {d.din}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+          {parsed.cin && (
+            <div style={{ marginTop:8, paddingTop:8, borderTop:'1px solid #BFDBFE', display:'flex', gap:16, flexWrap:'wrap', fontSize:12 }}>
+              {parsed.cin && <span><span style={{ color:'var(--text-3)' }}>CIN:</span> <strong>{parsed.cin}</strong></span>}
+              {parsed.dateOfIncorporation && <span><span style={{ color:'var(--text-3)' }}>Incorporated:</span> <strong>{parsed.dateOfIncorporation}</strong></span>}
+              {parsed.companyStatus && <span><span style={{ color:'var(--text-3)' }}>Status:</span> <strong style={{ color:'var(--success)' }}>{parsed.companyStatus}</strong></span>}
+              {parsed.authorisedCapital && <span><span style={{ color:'var(--text-3)' }}>Auth. Capital:</span> <strong>₹{parsed.authorisedCapital}</strong></span>}
+            </div>
+          )}
+        </div>
+      )}
+
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
+  )
+}
+
+// ─── Company Profile ───────────────────────────────────────────
 function CompanySettings() {
   const { activeCompany, updateCompany } = useAuth()
-
-  // Derive a stable key from company id so the form resets when you switch companies
   const companyId = activeCompany?.id
-
   const [form, setForm] = useState(() => buildForm(activeCompany))
+  const [highlightedFields, setHighlightedFields] = useState(new Set())
 
-  // Re-sync form if the active company changes (e.g. user switches company mid-session)
   useEffect(() => {
     setForm(buildForm(activeCompany))
-  }, [companyId])  // eslint-disable-line react-hooks/exhaustive-deps
+    setHighlightedFields(new Set())
+  }, [companyId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
+  // Called when SmartDocUpload successfully extracts and the user clicks Apply
+  const handleExtracted = (formUpdates, rawParsed) => {
+    setForm(f => ({ ...f, ...formUpdates }))
+    setHighlightedFields(new Set(Object.keys(formUpdates)))
+    // Also pre-fill CIN from MCA data if not in standard form fields
+    if (rawParsed.cin) setForm(f => ({ ...f, cin: rawParsed.cin, ...formUpdates }))
+    toast.success('Form filled from document ✓ — review and save when ready')
+    // Clear highlights after 4s
+    setTimeout(() => setHighlightedFields(new Set()), 4000)
+  }
+
   const handleSave = () => {
     if (!activeCompany) return
-    // Persist everything that AuthContext / Companies page cares about
     updateCompany(activeCompany.id, {
-      name:     form.tradeName,   // trade name is the display name used everywhere
+      name:      form.tradeName,
       legalName: form.legalName,
-      gstin:    form.gstin,
-      pan:      form.pan,
-      cin:      form.cin,
-      tan:      form.tan,
-      address:  form.address,
-      city:     form.city,
-      state:    form.state,
-      pincode:  form.pincode,
-      phone:    form.phone,
-      email:    form.email,
-      website:  form.website,
-      fyStart:  form.fyStart,
-      currency: form.currency,
-      // Keep existing color / initials / type intact
+      gstin:     form.gstin,
+      pan:       form.pan,
+      cin:       form.cin,
+      tan:       form.tan,
+      address:   form.address,
+      city:      form.city,
+      state:     form.state,
+      pincode:   form.pincode,
+      phone:     form.phone,
+      email:     form.email,
+      website:   form.website,
+      fyStart:   form.fyStart,
+      currency:  form.currency,
     })
+    setHighlightedFields(new Set())
     toast.success('Company profile saved!')
   }
 
-  const handleCancel = () => setForm(buildForm(activeCompany))
+  const handleCancel = () => {
+    setForm(buildForm(activeCompany))
+    setHighlightedFields(new Set())
+  }
+
+  // Helper to style fields that were just filled by the parser
+  const inputStyle = (key) => ({
+    ...(highlightedFields.has(key) ? {
+      border: '2px solid var(--success)',
+      background: '#F0FDF4',
+      transition: 'all 0.4s',
+    } : {})
+  })
 
   return (
     <>
+      {/* ── Smart Document Upload ── */}
+      <SmartDocUpload onExtracted={handleExtracted} />
+
       <Section title="Business Identity">
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0 24px' }}>
           <Field label="Legal Name">
-            <input className="input" value={form.legalName} onChange={e=>set('legalName',e.target.value)}/>
+            <input className="input" value={form.legalName} onChange={e=>set('legalName',e.target.value)} style={inputStyle('legalName')}/>
           </Field>
           <Field label="Trade / Display Name">
-            <input className="input" value={form.tradeName} onChange={e=>set('tradeName',e.target.value)}/>
+            <input className="input" value={form.tradeName} onChange={e=>set('tradeName',e.target.value)} style={inputStyle('tradeName')}/>
           </Field>
           <Field label="GSTIN" hint="15-digit GST Identification Number">
-            <input className="input" value={form.gstin} onChange={e=>set('gstin',e.target.value.toUpperCase())} placeholder="22AAAAA0000A1Z5" maxLength={15}/>
+            <input className="input" value={form.gstin} onChange={e=>set('gstin',e.target.value.toUpperCase())} placeholder="22AAAAA0000A1Z5" maxLength={15} style={inputStyle('gstin')}/>
           </Field>
           <Field label="PAN">
-            <input className="input" value={form.pan} onChange={e=>set('pan',e.target.value.toUpperCase())} placeholder="AAAAA1234A" maxLength={10}/>
+            <input className="input" value={form.pan} onChange={e=>set('pan',e.target.value.toUpperCase())} placeholder="AAAAA1234A" maxLength={10} style={inputStyle('pan')}/>
           </Field>
           <Field label="CIN (if applicable)">
-            <input className="input" value={form.cin} onChange={e=>set('cin',e.target.value)}/>
+            <input className="input" value={form.cin} onChange={e=>set('cin',e.target.value)} style={inputStyle('cin')}/>
           </Field>
           <Field label="TAN">
-            <input className="input" value={form.tan} onChange={e=>set('tan',e.target.value)}/>
+            <input className="input" value={form.tan} onChange={e=>set('tan',e.target.value)} style={inputStyle('tan')}/>
           </Field>
         </div>
       </Section>
 
       <Section title="Address & Contact">
         <Field label="Registered Address">
-          <textarea className="input" rows={2} value={form.address} onChange={e=>set('address',e.target.value)} style={{ resize:'none' }}/>
+          <textarea className="input" rows={2} value={form.address} onChange={e=>set('address',e.target.value)} style={{ resize:'none', ...inputStyle('address') }}/>
         </Field>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'0 16px' }}>
           <Field label="City">
-            <input className="input" value={form.city} onChange={e=>set('city',e.target.value)}/>
+            <input className="input" value={form.city} onChange={e=>set('city',e.target.value)} style={inputStyle('city')}/>
           </Field>
           <Field label="State">
-            <select className="input" value={form.state} onChange={e=>set('state',e.target.value)}>
+            <select className="input" value={form.state} onChange={e=>set('state',e.target.value)} style={inputStyle('state')}>
               {STATES.map(s=><option key={s}>{s}</option>)}
             </select>
           </Field>
           <Field label="Pincode">
-            <input className="input" value={form.pincode} onChange={e=>set('pincode',e.target.value)} maxLength={6}/>
+            <input className="input" value={form.pincode} onChange={e=>set('pincode',e.target.value)} maxLength={6} style={inputStyle('pincode')}/>
           </Field>
         </div>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'0 16px' }}>
           <Field label="Phone">
-            <input className="input" value={form.phone} onChange={e=>set('phone',e.target.value)}/>
+            <input className="input" value={form.phone} onChange={e=>set('phone',e.target.value)} style={inputStyle('phone')}/>
           </Field>
           <Field label="Email">
-            <input className="input" type="email" value={form.email} onChange={e=>set('email',e.target.value)}/>
+            <input className="input" type="email" value={form.email} onChange={e=>set('email',e.target.value)} style={inputStyle('email')}/>
           </Field>
           <Field label="Website">
-            <input className="input" value={form.website} onChange={e=>set('website',e.target.value)}/>
+            <input className="input" value={form.website} onChange={e=>set('website',e.target.value)} style={inputStyle('website')}/>
           </Field>
         </div>
       </Section>
@@ -205,28 +780,32 @@ function CompanySettings() {
   )
 }
 
-// Build initial form state from the activeCompany object stored in AuthContext
 function buildForm(co) {
   return {
     legalName: co?.legalName || co?.name || '',
-    tradeName: co?.name || '',
-    gstin:    co?.gstin   || '',
-    pan:      co?.pan     || '',
-    cin:      co?.cin     || '',
-    tan:      co?.tan     || '',
-    address:  co?.address || '',
-    city:     co?.city    || '',
-    state:    co?.state   || 'Maharashtra',
-    pincode:  co?.pincode || '',
-    phone:    co?.phone   || '',
-    email:    co?.email   || '',
-    website:  co?.website || '',
-    fyStart:  co?.fyStart || '04',
-    currency: co?.currency|| 'INR',
+    tradeName: co?.name      || '',
+    gstin:     co?.gstin     || '',
+    pan:       co?.pan       || '',
+    cin:       co?.cin       || '',
+    tan:       co?.tan       || '',
+    address:   co?.address   || '',
+    city:      co?.city      || '',
+    state:     co?.state     || 'Gujarat',
+    pincode:   co?.pincode   || '',
+    phone:     co?.phone     || '',
+    email:     co?.email     || '',
+    website:   co?.website   || '',
+    fyStart:   co?.fyStart   || '04',
+    currency:  co?.currency  || 'INR',
   }
 }
 
-const STATES = ['Andhra Pradesh','Assam','Bihar','Chhattisgarh','Delhi','Goa','Gujarat','Haryana','Himachal Pradesh','Jharkhand','Karnataka','Kerala','Madhya Pradesh','Maharashtra','Manipur','Meghalaya','Mizoram','Nagaland','Odisha','Punjab','Rajasthan','Sikkim','Tamil Nadu','Telangana','Tripura','Uttar Pradesh','Uttarakhand','West Bengal']
+const STATES = [
+  'Andhra Pradesh','Assam','Bihar','Chhattisgarh','Delhi','Goa','Gujarat','Haryana',
+  'Himachal Pradesh','Jharkhand','Karnataka','Kerala','Madhya Pradesh','Maharashtra',
+  'Manipur','Meghalaya','Mizoram','Nagaland','Odisha','Punjab','Rajasthan','Sikkim',
+  'Tamil Nadu','Telangana','Tripura','Uttar Pradesh','Uttarakhand','West Bengal',
+]
 
 // ─── Users & Roles ─────────────────────────────────────────────
 function UsersSettings() {
@@ -240,13 +819,13 @@ function UsersSettings() {
     billing:     { view:true,  create:true,  edit:true,  delete:false, export:false, settings:false },
   }
   const [users, setUsers] = useState([
-    { id:1, name:'Admin User',    email:'admin@finix.in',       role:'admin',      status:'active', lastLogin:'Today 09:14' },
-    { id:2, name:'Ravi Sharma',   email:'ravi@acmecorp.in',     role:'accountant', status:'active', lastLogin:'Today 11:30' },
-    { id:3, name:'Priya Mehta',   email:'priya@acmecorp.in',    role:'auditor',    status:'active', lastLogin:'Yesterday' },
-    { id:4, name:'Suresh Patel',  email:'suresh@acmecorp.in',   role:'view_only',  status:'invited',lastLogin:'Never' },
+    { id:1, name:'Admin User',   email:'admin@finix.in',    role:'admin',      status:'active',  lastLogin:'Today 09:14' },
+    { id:2, name:'Ravi Sharma',  email:'ravi@acmecorp.in',  role:'accountant', status:'active',  lastLogin:'Today 11:30' },
+    { id:3, name:'Priya Mehta',  email:'priya@acmecorp.in', role:'auditor',    status:'active',  lastLogin:'Yesterday'   },
+    { id:4, name:'Suresh Patel', email:'suresh@acmecorp.in',role:'view_only',  status:'invited', lastLogin:'Never'       },
   ])
   const [modal, setModal] = useState(null)
-  const [form, setForm] = useState({ name:'', email:'', role:'accountant', sendInvite:true })
+  const [form,  setForm]  = useState({ name:'', email:'', role:'accountant', sendInvite:true })
   const set = (k,v) => setForm(f=>({...f,[k]:v}))
 
   const handleSave = () => {
@@ -261,7 +840,7 @@ function UsersSettings() {
     setModal(null)
     setForm({ name:'', email:'', role:'accountant', sendInvite:true })
   }
-  const handleEdit = (u) => { setForm({ name:u.name, email:u.email, role:u.role, sendInvite:false }); setModal(u) }
+  const handleEdit   = (u) => { setForm({ name:u.name, email:u.email, role:u.role, sendInvite:false }); setModal(u) }
   const handleDelete = (id) => { setUsers(u => u.filter(x=>x.id!==id)); toast.success('User removed') }
 
   return (
@@ -380,11 +959,11 @@ function UsersSettings() {
 
 // ─── Security ────────────────────────────────────────────────
 function SecuritySettings() {
-  const [show, setShow] = useState({})
+  const [show, setShow]               = useState({})
   const toggle = (k) => setShow(s=>({...s,[k]:!s[k]}))
-  const [twoFA, setTwoFA] = useState(false)
+  const [twoFA,          setTwoFA]          = useState(false)
   const [sessionTimeout, setSessionTimeout] = useState('480')
-  const [ipWhitelist, setIpWhitelist] = useState(false)
+  const [ipWhitelist,    setIpWhitelist]    = useState(false)
 
   return (
     <>
@@ -410,13 +989,10 @@ function SecuritySettings() {
           <div>
             <div style={{ fontWeight:600, fontSize:13, marginBottom:4 }}>Authenticator App (TOTP)</div>
             <div style={{ fontSize:12, color:'var(--text-3)', marginBottom:12 }}>Use Google Authenticator or Authy for extra security</div>
-            {twoFA ? (
-              <div style={{ display:'flex', alignItems:'center', gap:8, color:'var(--success)', fontSize:12, fontWeight:600 }}>
-                <Check size={14}/> 2FA is enabled
-              </div>
-            ) : (
-              <button className="btn btn-secondary" style={{ fontSize:12 }} onClick={()=>{setTwoFA(true);toast.success('2FA enabled! Scan QR with Authenticator app')}}><Key size={13}/> Enable 2FA</button>
-            )}
+            {twoFA
+              ? <div style={{ display:'flex', alignItems:'center', gap:8, color:'var(--success)', fontSize:12, fontWeight:600 }}><Check size={14}/> 2FA is enabled</div>
+              : <button className="btn btn-secondary" style={{ fontSize:12 }} onClick={()=>{setTwoFA(true);toast.success('2FA enabled! Scan QR with Authenticator app')}}><Key size={13}/> Enable 2FA</button>
+            }
           </div>
           <div style={{ padding:'12px 16px', background:'var(--info-l)', borderRadius:6, border:'1px solid var(--info-b)', fontSize:11, color:'var(--info)', maxWidth:260 }}>
             <strong>Recommended:</strong> Enable 2FA for all admin accounts accessing financial data.
@@ -449,11 +1025,10 @@ function SecuritySettings() {
 
 // ─── GST & Tax Settings ─────────────────────────────────────
 function GSTSettings() {
-  const [gstRegType, setGstRegType] = useState('regular')
-  const [autoITC, setAutoITC] = useState(true)
-  const [eInvoice, setEInvoice] = useState(false)
-  const [eWayBill, setEWayBill] = useState(false)
-  const [gspProvider, setGspProvider] = useState('')
+  const [gstRegType,    setGstRegType]    = useState('regular')
+  const [eInvoice,      setEInvoice]      = useState(false)
+  const [eWayBill,      setEWayBill]      = useState(false)
+  const [gspProvider,   setGspProvider]   = useState('')
   const [tdsApplicable, setTdsApplicable] = useState(true)
 
   return (
@@ -476,7 +1051,7 @@ function GSTSettings() {
           </Field>
           <Field label="State of Registration">
             <select className="input">
-              {['Maharashtra','Gujarat','Karnataka','Delhi','Tamil Nadu','Telangana'].map(s=><option key={s}>{s}</option>)}
+              {STATES.map(s=><option key={s}>{s}</option>)}
             </select>
           </Field>
           <Field label="Aggregate Turnover (₹ Cr)">
@@ -545,25 +1120,25 @@ function GSTSettings() {
 function NotificationsSettings() {
   const NOTIFS = [
     { group:'Compliance', items:[
-      { key:'gst_due', label:'GST Filing Due Reminders', sub:'7 days, 3 days, 1 day before' },
-      { key:'tds_due', label:'TDS Challan Due (7th every month)' },
-      { key:'roc_due', label:'MCA / ROC Filing Reminders' },
-      { key:'itr_due', label:'Income Tax Return Reminders' },
+      { key:'gst_due',   label:'GST Filing Due Reminders', sub:'7 days, 3 days, 1 day before' },
+      { key:'tds_due',   label:'TDS Challan Due (7th every month)' },
+      { key:'roc_due',   label:'MCA / ROC Filing Reminders' },
+      { key:'itr_due',   label:'Income Tax Return Reminders' },
     ]},
     { group:'Banking', items:[
       { key:'reconcile', label:'Unreconciled Transactions Alert' },
-      { key:'low_bal', label:'Low Bank Balance Alert' },
-      { key:'cheque', label:'Cheque Bounce / Dishonour Alert' },
+      { key:'low_bal',   label:'Low Bank Balance Alert' },
+      { key:'cheque',    label:'Cheque Bounce / Dishonour Alert' },
     ]},
     { group:'Business', items:[
-      { key:'overdue', label:'Outstanding Receivables (overdue)' },
-      { key:'payables', label:'Payables Due Reminders' },
-      { key:'payroll', label:'Payroll Processing Reminders' },
+      { key:'overdue',   label:'Outstanding Receivables (overdue)' },
+      { key:'payables',  label:'Payables Due Reminders' },
+      { key:'payroll',   label:'Payroll Processing Reminders' },
     ]},
     { group:'AI & System', items:[
-      { key:'ai_classify', label:'AI Classification Anomalies' },
-      { key:'data_backup', label:'Daily Backup Completion' },
-      { key:'login', label:'New Login / Suspicious Activity' },
+      { key:'ai_classify',label:'AI Classification Anomalies' },
+      { key:'data_backup',label:'Daily Backup Completion' },
+      { key:'login',      label:'New Login / Suspicious Activity' },
     ]},
   ]
   const [settings, setSettings] = useState(() => {
@@ -617,10 +1192,10 @@ function NotificationsSettings() {
 
 // ─── Appearance ──────────────────────────────────────────────
 function AppearanceSettings() {
-  const [lang, setLang] = useState('en')
+  const [lang,       setLang]       = useState('en')
   const [dateFormat, setDateFormat] = useState('DD-MM-YYYY')
-  const [numFormat, setNumFormat] = useState('indian')
-  const [density, setDensity] = useState('comfortable')
+  const [numFormat,  setNumFormat]  = useState('indian')
+  const [density,    setDensity]    = useState('comfortable')
 
   return (
     <>
@@ -672,12 +1247,12 @@ function AppearanceSettings() {
 
 // ─── AI Settings ─────────────────────────────────────────────
 function AISettings() {
-  const [autoClassify, setAutoClassify] = useState(true)
-  const [smartReconcile, setSmartReconcile] = useState(true)
-  const [anomalyDetect, setAnomalyDetect] = useState(true)
-  const [forecastingEnabled, setForecasting] = useState(false)
-  const [taxOptimiser, setTaxOptimiser] = useState(true)
-  const [confidence, setConfidence] = useState(85)
+  const [autoClassify,       setAutoClassify]   = useState(true)
+  const [smartReconcile,     setSmartReconcile] = useState(true)
+  const [anomalyDetect,      setAnomalyDetect]  = useState(true)
+  const [forecastingEnabled, setForecasting]    = useState(false)
+  const [taxOptimiser,       setTaxOptimiser]   = useState(true)
+  const [confidence,         setConfidence]     = useState(85)
 
   return (
     <>
@@ -690,11 +1265,11 @@ function AISettings() {
           </div>
           <span className="badge badge-blue" style={{ marginLeft:'auto' }}>Enabled</span>
         </div>
-        <Toggle2 value={autoClassify} onChange={setAutoClassify} label="Auto-classify bank transactions using AI"/>
-        <Toggle2 value={smartReconcile} onChange={setSmartReconcile} label="Smart reconciliation — AI-powered matching"/>
-        <Toggle2 value={anomalyDetect} onChange={setAnomalyDetect} label="Anomaly detection — flag unusual entries"/>
+        <Toggle2 value={autoClassify}       onChange={setAutoClassify}   label="Auto-classify bank transactions using AI"/>
+        <Toggle2 value={smartReconcile}     onChange={setSmartReconcile} label="Smart reconciliation — AI-powered matching"/>
+        <Toggle2 value={anomalyDetect}      onChange={setAnomalyDetect}  label="Anomaly detection — flag unusual entries"/>
         <Toggle2 value={forecastingEnabled} onChange={v=>{setForecasting(v);v&&toast.success('Cash flow forecasting enabled!')}} label="Cash flow forecasting (Beta)"/>
-        <Toggle2 value={taxOptimiser} onChange={setTaxOptimiser} label="Tax optimiser suggestions — ITC & deductions"/>
+        <Toggle2 value={taxOptimiser}       onChange={setTaxOptimiser}   label="Tax optimiser suggestions — ITC & deductions"/>
         <Field label={`Minimum AI Confidence Threshold: ${confidence}%`} hint="Transactions below this confidence score will be flagged for manual review">
           <input type="range" min={50} max={99} value={confidence} onChange={e=>setConfidence(Number(e.target.value))} style={{ width:'100%', accentColor:'var(--accent)' }}/>
           <div style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--text-4)', marginTop:4 }}>
@@ -704,10 +1279,10 @@ function AISettings() {
       </Section>
 
       <Section title="AI Assistant">
-        <Toggle2 value={true} onChange={()=>{}} label="Smart Assistant — conversational queries in natural language"/>
-        <Toggle2 value={true} onChange={()=>{}} label="Layman Mode — explain accounting in simple terms"/>
+        <Toggle2 value={true}  onChange={()=>{}}                                   label="Smart Assistant — conversational queries in natural language"/>
+        <Toggle2 value={true}  onChange={()=>{}}                                   label="Layman Mode — explain accounting in simple terms"/>
         <Toggle2 value={false} onChange={()=>toast.info('Whatsapp integration coming soon')} label="WhatsApp Bot — ask queries via WhatsApp (Coming Soon)"/>
-        <Toggle2 value={false} onChange={()=>toast.info('Voice input coming soon')} label="Voice Input — dictate entries (Coming Soon)"/>
+        <Toggle2 value={false} onChange={()=>toast.info('Voice input coming soon')}          label="Voice Input — dictate entries (Coming Soon)"/>
       </Section>
 
       <div style={{ display:'flex', justifyContent:'flex-end' }}>
@@ -720,18 +1295,18 @@ function AISettings() {
 // ─── Integrations ─────────────────────────────────────────────
 function IntegrationsSettings() {
   const INTEGRATIONS = [
-    { name:'Tally Prime',        icon:'🏢', desc:'Import/export data from Tally ERP 9 / Prime', status:'available' },
-    { name:'Zoho Books',         icon:'📊', desc:'Migrate data from Zoho Books',                 status:'available' },
-    { name:'QuickBooks',         icon:'💼', desc:'Import from QuickBooks Online / Desktop',       status:'available' },
-    { name:'HDFC Bank Feed',     icon:'🏦', desc:'Auto-import bank statement daily',              status:'connected' },
-    { name:'ICICI Bank Feed',    icon:'🏦', desc:'Auto-import bank statement daily',              status:'available' },
-    { name:'SBI Bank Feed',      icon:'🏦', desc:'Auto-import SBI bank statement',                status:'available' },
-    { name:'ClearTax GST',       icon:'📋', desc:'File GSTR-1, GSTR-3B via ClearTax',            status:'connected' },
-    { name:'Razorpay',           icon:'💳', desc:'Auto-reconcile Razorpay collections',           status:'available' },
-    { name:'Paytm Business',     icon:'💳', desc:'Auto-reconcile Paytm settlements',              status:'available' },
-    { name:'AWS / GCP',          icon:'☁️', desc:'Cloud storage for audit trail documents',       status:'available' },
-    { name:'Google Workspace',   icon:'📧', desc:'Send invoices via Gmail',                       status:'available' },
-    { name:'Slack',              icon:'💬', desc:'Financial alerts in Slack channel',             status:'available' },
+    { name:'Tally Prime',      icon:'🏢', desc:'Import/export data from Tally ERP 9 / Prime' },
+    { name:'Zoho Books',       icon:'📊', desc:'Migrate data from Zoho Books'                 },
+    { name:'QuickBooks',       icon:'💼', desc:'Import from QuickBooks Online / Desktop'       },
+    { name:'HDFC Bank Feed',   icon:'🏦', desc:'Auto-import bank statement daily'              },
+    { name:'ICICI Bank Feed',  icon:'🏦', desc:'Auto-import bank statement daily'              },
+    { name:'SBI Bank Feed',    icon:'🏦', desc:'Auto-import SBI bank statement'                },
+    { name:'ClearTax GST',     icon:'📋', desc:'File GSTR-1, GSTR-3B via ClearTax'            },
+    { name:'Razorpay',         icon:'💳', desc:'Auto-reconcile Razorpay collections'           },
+    { name:'Paytm Business',   icon:'💳', desc:'Auto-reconcile Paytm settlements'              },
+    { name:'AWS / GCP',        icon:'☁️', desc:'Cloud storage for audit trail documents'       },
+    { name:'Google Workspace', icon:'📧', desc:'Send invoices via Gmail'                       },
+    { name:'Slack',            icon:'💬', desc:'Financial alerts in Slack channel'             },
   ]
   const [connected, setConnected] = useState(['HDFC Bank Feed','ClearTax GST'])
   const toggle = (name) => {
@@ -766,12 +1341,12 @@ function DataSettings() {
       <Section title="Data Export">
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
           {[
-            { label:'Export All Vouchers', fmt:'Excel / CSV', icon:'📊' },
-            { label:'Export Chart of Accounts', fmt:'Excel', icon:'📋' },
-            { label:'Export Trial Balance', fmt:'PDF / Excel', icon:'⚖️' },
-            { label:'Export GSTR Data', fmt:'JSON / Excel', icon:'🏛️' },
-            { label:'Export Payroll Data', fmt:'Excel', icon:'👥' },
-            { label:'Full Company Backup', fmt:'ZIP Archive', icon:'💾' },
+            { label:'Export All Vouchers',       fmt:'Excel / CSV', icon:'📊' },
+            { label:'Export Chart of Accounts',  fmt:'Excel',       icon:'📋' },
+            { label:'Export Trial Balance',       fmt:'PDF / Excel', icon:'⚖️'  },
+            { label:'Export GSTR Data',           fmt:'JSON / Excel',icon:'🏛️'  },
+            { label:'Export Payroll Data',        fmt:'Excel',       icon:'👥' },
+            { label:'Full Company Backup',        fmt:'ZIP Archive', icon:'💾' },
           ].map(e=>(
             <div key={e.label} style={{ padding:'14px 16px', border:'1px solid var(--border)', borderRadius:8, display:'flex', alignItems:'center', gap:12 }}>
               <span style={{ fontSize:20 }}>{e.icon}</span>
@@ -832,11 +1407,11 @@ function PrintSettings() {
         </div>
       </Section>
       <Section title="Invoice Content">
-        <Toggle2 value={true} onChange={()=>{}} label="Show GSTIN on invoice"/>
-        <Toggle2 value={true} onChange={()=>{}} label="Show HSN/SAC codes"/>
-        <Toggle2 value={true} onChange={()=>{}} label="Show bank details for payment"/>
+        <Toggle2 value={true}  onChange={()=>{}} label="Show GSTIN on invoice"/>
+        <Toggle2 value={true}  onChange={()=>{}} label="Show HSN/SAC codes"/>
+        <Toggle2 value={true}  onChange={()=>{}} label="Show bank details for payment"/>
         <Toggle2 value={false} onChange={()=>{}} label="Enable digital signature on PDF"/>
-        <Toggle2 value={true} onChange={()=>{}} label="Auto-send invoice to customer email"/>
+        <Toggle2 value={true}  onChange={()=>{}} label="Auto-send invoice to customer email"/>
         <Toggle2 value={false} onChange={()=>toast.info('WhatsApp invoicing coming soon')} label="Send invoice via WhatsApp (Coming Soon)"/>
       </Section>
     </>
@@ -848,10 +1423,10 @@ function PayrollSettings() {
   return (
     <>
       <Section title="Statutory Compliance">
-        <Toggle2 value={true} onChange={()=>{}} label="PF (Provident Fund) — 12% employer + 12% employee"/>
-        <Toggle2 value={true} onChange={()=>{}} label="ESI (Employee State Insurance) — applicable below ₹21,000 salary"/>
-        <Toggle2 value={true} onChange={()=>{}} label="Professional Tax — state-wise deduction"/>
-        <Toggle2 value={true} onChange={()=>{}} label="TDS on Salary (Section 192)"/>
+        <Toggle2 value={true}  onChange={()=>{}} label="PF (Provident Fund) — 12% employer + 12% employee"/>
+        <Toggle2 value={true}  onChange={()=>{}} label="ESI (Employee State Insurance) — applicable below ₹21,000 salary"/>
+        <Toggle2 value={true}  onChange={()=>{}} label="Professional Tax — state-wise deduction"/>
+        <Toggle2 value={true}  onChange={()=>{}} label="TDS on Salary (Section 192)"/>
         <Toggle2 value={false} onChange={()=>{}} label="NPS (National Pension System)"/>
         <Toggle2 value={false} onChange={()=>{}} label="Gratuity Provisioning"/>
       </Section>
@@ -872,23 +1447,23 @@ function PayrollSettings() {
 
 // ─── Main Settings Page ───────────────────────────────────────
 const PANELS = {
-  company: CompanySettings,
-  users: UsersSettings,
-  security: SecuritySettings,
-  gst: GSTSettings,
-  payroll: PayrollSettings,
+  company:       CompanySettings,
+  users:         UsersSettings,
+  security:      SecuritySettings,
+  gst:           GSTSettings,
+  payroll:       PayrollSettings,
   notifications: NotificationsSettings,
-  appearance: AppearanceSettings,
-  integrations: IntegrationsSettings,
-  ai: AISettings,
-  data: DataSettings,
-  print: PrintSettings,
+  appearance:    AppearanceSettings,
+  integrations:  IntegrationsSettings,
+  ai:            AISettings,
+  data:          DataSettings,
+  print:         PrintSettings,
 }
 
 export default function Settings() {
   const [active, setActive] = useState('company')
-  const Panel = PANELS[active] || CompanySettings
-  const current = SIDEBAR.find(s=>s.key===active)
+  const Panel   = PANELS[active] || CompanySettings
+  const current = SIDEBAR.find(s => s.key === active)
 
   return (
     <div className="page-wrap page-enter">
