@@ -1,114 +1,39 @@
 """
-app/middleware.py
------------------
-Centralized error handling, request logging, and rate limiting.
-All APIs return structured, meaningful responses.
+Middleware — CORS, request ID, timing, error formatting
 """
 from __future__ import annotations
-
+import logging
 import time
-import structlog
-from collections import defaultdict
-from fastapi import FastAPI, Request, Response
+import uuid
+
+from fastapi import Request, Response
 from fastapi.responses import JSONResponse
-from fastapi.exceptions import RequestValidationError
-from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.base import BaseHTTPMiddleware
 
-log = structlog.get_logger()
-
-# ── Simple in-memory rate limiter ─────────────────────────────────────────────
-# For production, replace with Redis-backed sliding window.
-_rate_store: dict[str, list[float]] = defaultdict(list)
-RATE_LIMIT_REQUESTS = 200
-RATE_LIMIT_WINDOW   = 60   # seconds
+log = logging.getLogger(__name__)
 
 
-def _is_rate_limited(client_ip: str) -> bool:
-    now = time.time()
-    window_start = now - RATE_LIMIT_WINDOW
-    calls = _rate_store[client_ip]
-    calls[:] = [t for t in calls if t > window_start]  # prune old
-    if len(calls) >= RATE_LIMIT_REQUESTS:
-        return True
-    calls.append(now)
-    return False
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        request_id = str(uuid.uuid4())[:8]
+        start = time.perf_counter()
+        request.state.request_id = request_id
 
-
-def register_middleware(app: FastAPI) -> None:
-    """Register all middleware and exception handlers on the app."""
-
-    # ── Request logging ────────────────────────────────────────────────────
-    @app.middleware("http")
-    async def log_requests(request: Request, call_next):
-        start = time.time()
-        response: Response = await call_next(request)
-        duration_ms = round((time.time() - start) * 1000, 2)
-        log.info(
-            "http_request",
-            method=request.method,
-            path=request.url.path,
-            status=response.status_code,
-            duration_ms=duration_ms,
-            client=request.client.host if request.client else "unknown",
-        )
-        response.headers["X-Response-Time"] = f"{duration_ms}ms"
-        return response
-
-    # ── Rate limiting ──────────────────────────────────────────────────────
-    @app.middleware("http")
-    async def rate_limit(request: Request, call_next):
-        client_ip = request.client.host if request.client else "0.0.0.0"
-        if _is_rate_limited(client_ip):
+        try:
+            response: Response = await call_next(request)
+        except Exception as exc:
+            log.exception("Unhandled error [%s] %s %s", request_id, request.method, request.url)
             return JSONResponse(
-                status_code=429,
-                content=_error_response(429, "Too many requests. Please slow down.", "RATE_LIMITED")
+                status_code=500,
+                content={"detail": "Internal server error", "request_id": request_id},
             )
-        return await call_next(request)
 
-    # ── HTTP exception handler ─────────────────────────────────────────────
-    @app.exception_handler(StarletteHTTPException)
-    async def http_exception_handler(request: Request, exc: StarletteHTTPException):
-        log.warning("http_error", status=exc.status_code, detail=exc.detail, path=request.url.path)
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=_error_response(exc.status_code, str(exc.detail), "HTTP_ERROR")
+        elapsed = (time.perf_counter() - start) * 1000
+        log.info(
+            "[%s] %s %s → %d (%.1fms)",
+            request_id, request.method, request.url.path,
+            response.status_code, elapsed,
         )
-
-    # ── Validation error handler ───────────────────────────────────────────
-    @app.exception_handler(RequestValidationError)
-    async def validation_exception_handler(request: Request, exc: RequestValidationError):
-        errors = [
-            {
-                "field":   " → ".join(str(e) for e in err["loc"]),
-                "message": err["msg"],
-            }
-            for err in exc.errors()
-        ]
-        log.warning("validation_error", errors=errors, path=request.url.path)
-        return JSONResponse(
-            status_code=422,
-            content={
-                "success": False,
-                "error":   "Validation failed",
-                "code":    "VALIDATION_ERROR",
-                "details": errors,
-            }
-        )
-
-    # ── General exception handler ──────────────────────────────────────────
-    @app.exception_handler(Exception)
-    async def general_exception_handler(request: Request, exc: Exception):
-        log.error("unhandled_exception", error=str(exc), path=request.url.path, exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content=_error_response(500, "An unexpected error occurred. Please try again.", "INTERNAL_ERROR")
-        )
-
-
-def _error_response(status: int, message: str, code: str) -> dict:
-    return {
-        "success": False,
-        "error":   message,
-        "code":    code,
-        "status":  status,
-    }
+        response.headers["X-Request-ID"] = request_id
+        response.headers["X-Response-Time"] = f"{elapsed:.1f}ms"
+        return response
